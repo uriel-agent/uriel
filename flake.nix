@@ -128,7 +128,7 @@
           urielctl-package = self.packages.${system}.urielctl;
           nixfmt = pkgs.runCommand "uriel-nixfmt-check" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
             cd ${self}
-            nixfmt --check flake.nix nix/modules/*.nix examples/nixos/*.nix examples/home-manager/*.nix
+            nixfmt --check flake.nix nix/modules/*.nix examples/*/*.nix
             touch $out
           '';
         }
