@@ -1,5 +1,6 @@
 export * from "./adapters.ts";
 export * from "./evidence.ts";
+export * from "./harness.ts";
 export * from "./profiles.ts";
 export * from "./repo-contract.ts";
 export * from "./signatures.ts";

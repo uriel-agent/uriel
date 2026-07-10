@@ -113,12 +113,18 @@ Common variables:
 - `URIEL_ALLOWED_REPOS`
 - `GH_TOKEN`
 - `OPENCODE_MODEL`
+- `URIEL_ADAPTER_HARNESS`
+- `URIEL_CLAUDE_MODEL`
 - `URIEL_MAX_CONCURRENT_JOBS`
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
 - `URIEL_ADAPTER_REPO_BOOTSTRAP`
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
+
+The `claude-code` harness authenticates through the environment file: set
+`ANTHROPIC_API_KEY`, or a long-lived subscription token minted with
+`claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`).
 
 Optional issue tracker adapters can use generic adapter variables such as
 `URIEL_ADAPTER_ISSUE_TRACKER`, `URIEL_ADAPTER_ISSUE_TRACKER_API_KEY`,
@@ -136,7 +142,8 @@ bundle of adapter choices, not a hardcoded repository identity.
 
 Adapter dimensions:
 
-- Harness: currently OpenCode; Hermes can be added as an optional harness
+- Harness: OpenCode (default) or Claude Code; Hermes can be added as an
+  optional harness
 - Issue tracker: optional adapter selected by name; no default
 - Repo bootstrap: optional, currently `direnv`
 - QA capability: `browser`, `android`, or both

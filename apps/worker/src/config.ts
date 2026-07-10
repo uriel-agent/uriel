@@ -3,9 +3,11 @@ export interface WorkerConfig {
   artifactsDir: string;
   allowedRepos: string[];
   browserUrl?: string;
+  claudeModel?: string;
   dryRun: boolean;
   enableAndroidQa: boolean;
   enableBrowserQa: boolean;
+  harnessAdapter?: string;
   host: string;
   issueTrackerAdapter?: string;
   issueTrackerApiKey?: string;
@@ -28,9 +30,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     allowedRepos: parseCsv(env.URIEL_ALLOWED_REPOS),
     artifactsDir: env.URIEL_ARTIFACTS_DIR ?? `${stateDir}/artifacts`,
     browserUrl: env.URIEL_BROWSER_URL,
+    claudeModel: env.URIEL_CLAUDE_MODEL,
     dryRun: env.URIEL_DRY_RUN === "1" || env.URIEL_DRY_RUN === "true",
     enableAndroidQa: env.URIEL_ENABLE_ANDROID_QA !== "false",
     enableBrowserQa: env.URIEL_ENABLE_BROWSER_QA !== "false",
+    harnessAdapter: env.URIEL_ADAPTER_HARNESS,
     host: env.URIEL_WORKER_HOST ?? "127.0.0.1",
     issueTrackerAdapter: env.URIEL_ADAPTER_ISSUE_TRACKER,
     issueTrackerApiKey: env.URIEL_ADAPTER_ISSUE_TRACKER_API_KEY,

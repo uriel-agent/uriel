@@ -12,6 +12,10 @@ let
     exec ${pkgs.nodejs_22}/bin/npx --yes opencode-ai "$@"
   '';
 
+  claudeWrapper = pkgs.writeShellScriptBin "claude" ''
+    exec ${pkgs.nodejs_22}/bin/npx --yes @anthropic-ai/claude-code "$@"
+  '';
+
   androidSdk = pkgs.androidenv.composeAndroidPackages {
     cmdLineToolsVersion = "11.0";
     platformToolsVersion = "36.0.0";
@@ -46,6 +50,7 @@ let
       pnpm
       rsync
       opencodeWrapper
+      claudeWrapper
     ]
     ++ lib.optionals cfg.enableAndroidQa [
       android-tools
