@@ -28,10 +28,22 @@ URIEL_WORKER_TOKEN=...
 GH_TOKEN=...
 OPENCODE_MODEL=...
 URIEL_ADAPTER_REPO_BOOTSTRAP=direnv
+# Optional: run jobs with the Claude Code harness.
+# URIEL_ADAPTER_HARNESS=claude-code
+# ANTHROPIC_API_KEY=...
 ```
 
 Issue tracker, chat, and ingress integrations are optional adapters. Add their
 environment variables only when the deployment enables those adapters.
+
+### Claude Code Harness
+
+Select the Claude Code harness globally with `URIEL_ADAPTER_HARNESS=claude-code`
+or per job with `urielctl submit --harness claude-code`. Headless
+authentication comes from `environmentFiles`: set `ANTHROPIC_API_KEY`, or a
+long-lived subscription token minted with `claude setup-token`
+(`CLAUDE_CODE_OAUTH_TOKEN`). The worker user's home is the state directory, so
+Claude CLI state lives under `/var/lib/uriel`.
 
 Useful NixOS module knobs:
 

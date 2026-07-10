@@ -6,7 +6,7 @@ of being wired directly into the worker lifecycle.
 
 ## Adapter Kinds
 
-- `harness`: runs the coding agent, such as OpenCode or Hermes.
+- `harness`: runs the coding agent, such as OpenCode, Claude Code, or Hermes.
 - `issueTracker`: finds, creates, or updates external issue records.
 - `repoBootstrap`: prepares a fresh worktree, such as `direnv allow`.
 - `qa`: captures browser, Android, or other verification evidence.

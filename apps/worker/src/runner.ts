@@ -2,6 +2,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  buildHarnessInvocation,
+  isHarnessId,
   parseJustRecipes,
   repoCacheKey,
   type Job,
@@ -38,7 +40,7 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     const worktree = await prepareWorktree(job, config, reporter, evidence);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
-    await runOpenCode(job, config, worktree, artifactsDir, reporter, evidence);
+    await runHarness(job, config, worktree, artifactsDir, reporter, evidence);
     const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence);
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
@@ -194,7 +196,7 @@ async function runProfileSetup(
   }
 }
 
-async function runOpenCode(
+async function runHarness(
   job: Job,
   config: WorkerConfig,
   worktree: string,
@@ -202,46 +204,46 @@ async function runOpenCode(
   reporter: JobReporter,
   evidence: EvidenceRecorder
 ): Promise<void> {
-  const transcriptPath = join(artifactsDir, "opencode-transcript.jsonl");
+  const harnessId = metadataString(job, "harness") ?? config.harnessAdapter ?? "opencode";
+  if (!isHarnessId(harnessId)) {
+    throw new Error(`Unknown harness adapter: ${harnessId}.`);
+  }
 
-  if (config.dryRun || !(await commandExists("opencode"))) {
+  const invocation = buildHarnessInvocation(harnessId, {
+    branch: job.branch,
+    model: harnessId === "opencode" ? config.opencodeModel : config.claudeModel,
+    prompt: buildPrompt(job),
+    worktree
+  });
+  const transcriptPath = join(artifactsDir, invocation.transcriptArtifact);
+
+  if (config.dryRun || !(await commandExists(invocation.command))) {
     const message = config.dryRun
-      ? "URIEL_DRY_RUN enabled; skipping OpenCode execution."
-      : "opencode is missing; writing a dry-run transcript.";
+      ? "URIEL_DRY_RUN enabled; skipping harness execution."
+      : `${invocation.command} is missing; writing a dry-run transcript.`;
     await reporter.event("worker", "warn", message);
     await writeFile(transcriptPath, JSON.stringify({ message, prompt: job.prompt }) + "\n");
     await reporter.uploadArtifact(
-      "opencode-transcript.jsonl",
+      invocation.transcriptArtifact,
       await readFile(transcriptPath),
       "application/x-ndjson"
     );
     return;
   }
 
-  await reporter.event("worker", "info", "Running OpenCode headlessly.");
-  const args = [
-    "run",
-    "--format",
-    "json",
-    "--title",
-    job.branch,
-    "--dir",
-    worktree,
-    ...(config.opencodeModel ? ["--model", config.opencodeModel] : []),
-    buildPrompt(job)
-  ];
-  const result = await runObservedCommand(evidence, "opencode", args, {
+  await reporter.event("worker", "info", `Running ${harnessId} headlessly.`);
+  const result = await runObservedCommand(evidence, invocation.command, invocation.args, {
     cwd: worktree,
     timeoutMs: 45 * 60_000
   });
   await writeFile(transcriptPath, result.stdout + result.stderr);
   await reporter.uploadArtifact(
-    "opencode-transcript.jsonl",
+    invocation.transcriptArtifact,
     await readFile(transcriptPath),
     "application/x-ndjson"
   );
   if (result.code !== 0) {
-    throw new Error(`OpenCode failed with ${result.code}.`);
+    throw new Error(`${harnessId} failed with ${result.code}.`);
   }
 }
 

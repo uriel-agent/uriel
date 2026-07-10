@@ -20,4 +20,14 @@ describe("worker config", () => {
     expect(config.enableBrowserQa).toBe(false);
     expect(config.maxConcurrentJobs).toBe(3);
   });
+
+  it("parses harness knobs from environment", () => {
+    const config = loadConfig({
+      URIEL_ADAPTER_HARNESS: "claude-code",
+      URIEL_CLAUDE_MODEL: "claude-opus-4-5"
+    });
+
+    expect(config.harnessAdapter).toBe("claude-code");
+    expect(config.claudeModel).toBe("claude-opus-4-5");
+  });
 });
