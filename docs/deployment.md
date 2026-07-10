@@ -60,6 +60,9 @@ Deploy the host:
 sudo nixos-rebuild switch --flake .#uriel-worker
 ```
 
+For a complete Hetzner + Tailscale host flake deployable with nixos-anywhere,
+see [examples/hetzner-tailscale](../examples/hetzner-tailscale).
+
 ## 2. Submit Jobs
 
 From the host or a trusted network path:

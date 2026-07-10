@@ -4,8 +4,9 @@ These are intentionally left out of v1 implementation decisions.
 
 - Whether Hermes should become a first-class harness or remain an optional
   orchestration layer around the worker API.
-- Whether to provision opinionated AWS, Hetzner, or bare-metal NixOS
-  infrastructure modules.
+- Whether to provision first-class NixOS infrastructure modules for providers
+  beyond Hetzner. A Hetzner + Tailscale host example now lives under
+  `examples/hetzner-tailscale`.
 - How much PR evidence should be mirrored into GitHub comments versus kept on
   the worker filesystem.
 - Whether Android emulator images should be prebuilt into a host image or
