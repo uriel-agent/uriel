@@ -136,6 +136,7 @@ in
         Environment files consumed by systemd before starting the worker.
         Use this with NixOS-native secret tools such as sops-nix or agenix.
         Files should contain KEY=VALUE lines such as URIEL_WORKER_TOKEN=...
+        and URIEL_CALLBACK_SECRET=...
       '';
     };
 

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import {
   createJobEvent,
   type Artifact,
+  type CheckResult,
   type Job,
   type JobEvent,
   type JobStatus
@@ -77,6 +78,40 @@ export class LocalJobStore {
       createJobEvent("job", "info", `Status changed to ${status}.`)
     );
     return this.getJob(jobId);
+  }
+
+  async setCheckResults(
+    jobId: string,
+    checkResults: CheckResult[]
+  ): Promise<Job | undefined> {
+    const job = await this.getJob(jobId);
+    if (!job) {
+      return undefined;
+    }
+    const next = {
+      ...job,
+      checkResults,
+      updatedAt: new Date().toISOString()
+    };
+    await this.putJob(next);
+    return next;
+  }
+
+  async setPullRequestUrl(
+    jobId: string,
+    pullRequestUrl: string
+  ): Promise<Job | undefined> {
+    const job = await this.getJob(jobId);
+    if (!job) {
+      return undefined;
+    }
+    const next = {
+      ...job,
+      pullRequestUrl,
+      updatedAt: new Date().toISOString()
+    };
+    await this.putJob(next);
+    return next;
   }
 
   async addArtifact(jobId: string, artifact: Artifact): Promise<Job | undefined> {

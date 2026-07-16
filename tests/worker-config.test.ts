@@ -6,6 +6,7 @@ describe("worker config", () => {
   it("parses framework knobs from environment", () => {
     const config = loadConfig({
       URIEL_ALLOWED_REPOS: "uriel-agent/uriel,https://github.com/acme/app",
+      URIEL_CALLBACK_SECRET: "callback-secret",
       URIEL_ENABLE_ANDROID_QA: "false",
       URIEL_ENABLE_BROWSER_QA: "false",
       URIEL_MAX_CONCURRENT_JOBS: "3",
@@ -16,6 +17,7 @@ describe("worker config", () => {
       "uriel-agent/uriel",
       "https://github.com/acme/app"
     ]);
+    expect(config.callbackSecret).toBe("callback-secret");
     expect(config.enableAndroidQa).toBe(false);
     expect(config.enableBrowserQa).toBe(false);
     expect(config.maxConcurrentJobs).toBe(3);

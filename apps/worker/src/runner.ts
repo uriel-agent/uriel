@@ -1,11 +1,16 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
 
 import {
+  buildChecksPromptSection,
   buildHarnessInvocation,
+  buildJobCallbackPayload,
   isHarnessId,
+  parseCheckResults,
   parseJustRecipes,
   repoCacheKey,
+  signPayloadSha256,
+  type CheckResult,
   type Job,
   worktreeSlug
 } from "../../../packages/core/src/index.ts";
@@ -40,20 +45,37 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     const worktree = await prepareWorktree(job, config, reporter, evidence);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
-    await runHarness(job, config, worktree, artifactsDir, reporter, evidence);
+    let harnessError: unknown;
+    let harnessFailed = false;
+    try {
+      await runHarness(job, config, worktree, artifactsDir, reporter, evidence);
+    } catch (error) {
+      harnessError = error;
+      harnessFailed = true;
+    }
+    await collectAgentArtifacts(job, artifactsDir, store, reporter);
+    if (job.checks?.length) {
+      await collectCheckResults(job, artifactsDir, store, reporter);
+    }
+    if (harnessFailed) {
+      throw harnessError;
+    }
     const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence);
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
     }
-    await finalizePullRequest(job, worktree, artifactsDir, reporter, evidence);
+    await finalizePullRequest(job, worktree, artifactsDir, store, reporter, evidence);
 
     await reporter.status("completed");
     await writeEvidenceManifest(evidence, job, store, reporter, "Job completed.");
+    await sendJobCallback(job, config, reporter, "Job completed.");
     await reporter.event("job", "info", "Job completed.");
   } catch (error) {
+    const summary = errorMessage(error);
     await reporter.status("failed");
-    await writeEvidenceManifest(evidence, job, store, reporter, errorMessage(error));
-    await reporter.event("job", "error", errorMessage(error));
+    await writeEvidenceManifest(evidence, job, store, reporter, summary);
+    await sendJobCallback(job, config, reporter, summary);
+    await reporter.event("job", "error", summary);
     throw error;
   }
 }
@@ -96,16 +118,50 @@ async function prepareWorktree(
     });
   }
 
+  const worktreeRef = job.ref
+    ? await resolveWorktreeRef(job.ref, cacheDir, reporter, evidence)
+    : "origin/main";
+
   await reporter.event("repo", "info", `Creating worktree ${job.branch}.`, {
+    ref: worktreeRef,
     worktree
   });
   await runObservedChecked(
     evidence,
     "git",
-    ["-C", cacheDir, "worktree", "add", "-B", job.branch, worktree, "origin/main"],
+    ["-C", cacheDir, "worktree", "add", "-B", job.branch, worktree, worktreeRef],
     { timeoutMs: 120_000 }
   );
   return worktree;
+}
+
+async function resolveWorktreeRef(
+  ref: string,
+  cacheDir: string,
+  reporter: JobReporter,
+  evidence: EvidenceRecorder
+): Promise<string> {
+  const revParseArgs = ["-C", cacheDir, "rev-parse", "--verify", `${ref}^{commit}`];
+  let resolved = await runObservedCommand(evidence, "git", revParseArgs, {
+    timeoutMs: 60_000
+  });
+  if (resolved.code !== 0) {
+    await reporter.event("repo", "info", `Fetching requested ref ${ref}.`);
+    await runObservedCommand(
+      evidence,
+      "git",
+      ["-C", cacheDir, "fetch", "origin", ref],
+      { timeoutMs: 120_000 }
+    );
+    resolved = await runObservedCommand(evidence, "git", revParseArgs, {
+      timeoutMs: 60_000
+    });
+  }
+  const commit = resolved.stdout.trim();
+  if (resolved.code !== 0 || !commit) {
+    throw new Error(`Requested ref "${ref}" could not be resolved to a commit.`);
+  }
+  return commit;
 }
 
 async function inspectRepository(
@@ -212,7 +268,7 @@ async function runHarness(
   const invocation = buildHarnessInvocation(harnessId, {
     branch: job.branch,
     model: harnessId === "opencode" ? config.opencodeModel : config.claudeModel,
-    prompt: buildPrompt(job),
+    prompt: buildPrompt(job, artifactsDir),
     worktree
   });
   const transcriptPath = join(artifactsDir, invocation.transcriptArtifact);
@@ -247,13 +303,102 @@ async function runHarness(
   }
 }
 
+async function collectAgentArtifacts(
+  job: Job,
+  artifactsDir: string,
+  store: LocalJobStore,
+  reporter: JobReporter
+): Promise<void> {
+  const latest = await store.getJob(job.id);
+  const registered = new Set(latest?.artifacts.map((artifact) => artifact.name) ?? []);
+  const files = await listFiles(artifactsDir);
+  for (const path of files) {
+    const name = relative(artifactsDir, path);
+    if (name === "check-results.json" || registered.has(name)) {
+      continue;
+    }
+    await reporter.registerArtifact(name);
+    registered.add(name);
+  }
+}
+
+async function listFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(path)));
+    } else if (entry.isFile()) {
+      files.push(path);
+    }
+  }
+  return files.sort();
+}
+
+async function collectCheckResults(
+  job: Job,
+  artifactsDir: string,
+  store: LocalJobStore,
+  reporter: JobReporter
+): Promise<void> {
+  if (!job.checks?.length) {
+    return;
+  }
+  let raw = "";
+  try {
+    raw = await readFile(join(artifactsDir, "check-results.json"), "utf8");
+  } catch {
+    raw = "";
+  }
+  const parsed = parseCheckResults(raw, job.checks);
+  for (const warning of parsed.warnings) {
+    await reporter.event("qa", "warn", warning);
+  }
+
+  const latest = await store.getJob(job.id);
+  const artifactNames = new Set(
+    latest?.artifacts.map((artifact) => artifact.name) ?? []
+  );
+  const results: CheckResult[] = [];
+  for (const result of parsed.results) {
+    const artifacts: string[] = [];
+    for (const name of result.artifacts ?? []) {
+      if (artifactNames.has(name)) {
+        artifacts.push(name);
+      } else {
+        await reporter.event(
+          "qa",
+          "warn",
+          `Dropped unregistered artifact reference "${name}" from check result "${result.id}".`
+        );
+      }
+    }
+    results.push({
+      ...result,
+      ...(result.artifacts ? { artifacts } : {})
+    });
+  }
+  await store.setCheckResults(job.id, results);
+}
+
 async function finalizePullRequest(
   job: Job,
   worktree: string,
   artifactsDir: string,
+  store: LocalJobStore,
   reporter: JobReporter,
   evidence: EvidenceRecorder
 ): Promise<void> {
+  if (job.kind === "verify") {
+    await reporter.event(
+      "repo",
+      "info",
+      "Verify jobs do not push branches or open pull requests."
+    );
+    return;
+  }
+
   const status = await runObservedChecked(evidence, "git", ["status", "--porcelain"], {
     cwd: worktree
   });
@@ -303,6 +448,7 @@ async function finalizePullRequest(
     return;
   }
   evidence.recordPullRequest(pr.stdout.trim());
+  await store.setPullRequestUrl(job.id, pr.stdout.trim());
   await reporter.event("repo", "info", "Draft PR created.", {
     url: pr.stdout.trim()
   });
@@ -349,18 +495,110 @@ async function writeEvidenceManifest(
   }
 }
 
-function buildPrompt(job: Job): string {
+function buildPrompt(job: Job, artifactsDir: string): string {
   return [
     "You are Uriel, a remote NixOS-first coding agent.",
     "Follow this repository's AGENTS.md instructions exactly.",
     `Branch: ${job.branch}`,
+    job.kind === "verify" ? "Kind: verify" : undefined,
     job.issue ? `Issue: ${job.issue}` : undefined,
     `Requested QA: ${job.qa}`,
     "",
-    job.prompt
+    job.prompt,
+    job.checks?.length
+      ? `\n${buildChecksPromptSection(
+          job.checks,
+          join(artifactsDir, "check-results.json"),
+          artifactsDir
+        )}`
+      : undefined
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+export async function sendJobCallback(
+  fallbackJob: Job,
+  config: WorkerConfig,
+  reporter: JobReporter,
+  summary: string
+): Promise<void> {
+  try {
+    const job = (await reporter.getJob()) ?? fallbackJob;
+    if (!job.callbackUrl) {
+      return;
+    }
+
+    if (!config.callbackSecret) {
+      await callbackEvent(
+        reporter,
+        "warn",
+        "Job callback is configured without URIEL_CALLBACK_SECRET; sending an unsigned callback."
+      );
+    }
+
+    const payload = buildJobCallbackPayload(job, summary);
+    const body = JSON.stringify(payload);
+    const signature = config.callbackSecret
+      ? await signPayloadSha256(config.callbackSecret, body)
+      : undefined;
+    const delays = [0, 5_000, 30_000];
+    for (const [index, delayMs] of delays.entries()) {
+      if (delayMs > 0) {
+        await delay(delayMs);
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const response = await fetch(job.callbackUrl, {
+          body,
+          headers: {
+            "content-type": "application/json",
+            "x-uriel-event": payload.event,
+            "x-uriel-job-id": job.id,
+            ...(signature ? { "x-uriel-signature": signature } : {})
+          },
+          method: "POST",
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return;
+      } catch (error) {
+        await callbackEvent(
+          reporter,
+          "warn",
+          `Job callback attempt ${index + 1} failed: ${errorMessage(error)}`
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    await callbackEvent(reporter, "error", "Job callback failed after 3 attempts.");
+  } catch (error) {
+    await callbackEvent(
+      reporter,
+      "error",
+      `Job callback could not be sent: ${errorMessage(error)}`
+    );
+  }
+}
+
+async function callbackEvent(
+  reporter: JobReporter,
+  level: "warn" | "error",
+  message: string
+): Promise<void> {
+  try {
+    await reporter.event("worker", level, message);
+  } catch (error) {
+    console.error(`${message} Event recording failed: ${errorMessage(error)}`);
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function buildPullRequestBody(job: Job): string {

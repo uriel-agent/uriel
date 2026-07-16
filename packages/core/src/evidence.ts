@@ -1,5 +1,6 @@
-import type { Artifact, Job, JobStatus } from "./types.ts";
+import type { CheckResult, JobCheck } from "./checks.ts";
 import type { RepoContract } from "./repo-contract.ts";
+import type { Artifact, Job, JobStatus } from "./types.ts";
 
 export interface EvidenceCommand {
   args: string[];
@@ -20,8 +21,14 @@ export interface EvidenceQa {
   summaries: string[];
 }
 
+export interface EvidenceChecks {
+  requested: JobCheck[];
+  results: CheckResult[];
+}
+
 export interface EvidenceManifest {
   artifacts: Artifact[];
+  checks?: EvidenceChecks;
   commands: EvidenceCommand[];
   generatedAt: string;
   job: {
@@ -46,6 +53,7 @@ export interface EvidenceManifest {
 
 export function createEvidenceManifest(input: {
   artifacts?: Artifact[];
+  checks?: EvidenceChecks;
   commands?: EvidenceCommand[];
   job: Job;
   pullRequest?: EvidencePullRequest;
@@ -55,6 +63,14 @@ export function createEvidenceManifest(input: {
 }): EvidenceManifest {
   return {
     artifacts: input.artifacts ?? [],
+    ...(input.job.checks?.length
+      ? {
+          checks: {
+            requested: input.checks?.requested ?? input.job.checks,
+            results: input.checks?.results ?? input.job.checkResults ?? []
+          }
+        }
+      : {}),
     commands: input.commands ?? [],
     generatedAt: new Date().toISOString(),
     job: {

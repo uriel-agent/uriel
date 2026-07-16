@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  signPayloadSha256,
   verifyGitHubSignature,
   verifyLinearSignature,
   verifySlackSignature,
@@ -10,6 +11,17 @@ import {
 const encoder = new TextEncoder();
 
 describe("webhook signatures", () => {
+  it("signs payloads that verify as GitHub-style SHA-256 signatures", async () => {
+    const body = "{\"job\":\"completed\"}";
+    const signature = await signPayloadSha256("callback-secret", body);
+    await expect(
+      verifyGitHubSignature("callback-secret", body, signature)
+    ).resolves.toBe(true);
+    await expect(
+      verifyGitHubSignature("different-secret", body, signature)
+    ).resolves.toBe(false);
+  });
+
   it("verifies GitHub SHA-256 signatures", async () => {
     const body = "{\"hello\":\"world\"}";
     const secret = "top-secret";

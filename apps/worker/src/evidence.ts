@@ -70,6 +70,14 @@ export class EvidenceRecorder {
   ): Promise<void> {
     const manifest = createEvidenceManifest({
       artifacts,
+      ...(job.checks?.length
+        ? {
+            checks: {
+              requested: job.checks,
+              results: job.checkResults ?? []
+            }
+          }
+        : {}),
       commands: this.commands,
       job,
       ...(this.pullRequestUrl ? { pullRequest: { url: this.pullRequestUrl } } : {}),
