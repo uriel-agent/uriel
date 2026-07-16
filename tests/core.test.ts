@@ -45,6 +45,39 @@ describe("job validation", () => {
       repo: "https://github.com/uriel-agent/uriel.git"
     });
     expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("change");
+    }
+  });
+
+  it("accepts verification job fields", () => {
+    const result = validateCreateJobRequest({
+      callbackUrl: "https://example.com/hooks/uriel",
+      checks: [{ id: "home.visible", text: "The home page is visible." }],
+      kind: "verify",
+      prompt: "Verify the home page",
+      ref: "refs/pull/42/head",
+      repo: "https://github.com/uriel-agent/uriel.git"
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    [{ kind: "review" }, "kind"],
+    [{ ref: "feature branch" }, "ref"],
+    [{ ref: "-bad" }, "ref"],
+    [{ callbackUrl: "ftp://example.com/hook" }, "callbackUrl"],
+    [{ checks: [{ id: "bad id", text: "Invalid" }] }, "checks"]
+  ])("rejects invalid extended job fields", (fields, expectedError) => {
+    const result = validateCreateJobRequest({
+      prompt: "Build the thing",
+      repo: "https://github.com/uriel-agent/uriel.git",
+      ...fields
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain(expectedError);
+    }
   });
 
   it("accepts adopter-defined job sources", () => {

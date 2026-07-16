@@ -42,6 +42,7 @@ Every worker job writes an `evidence.json` artifact. It contains:
 - discovered repo contract
 - command evidence with command, args, cwd, exit code, duration, and output tails
 - requested QA mode and QA summaries
+- optional `checks` with the requested checklist and per-check results
 - artifacts captured before the manifest was written
 - draft PR URL when one was created
 

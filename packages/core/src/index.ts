@@ -1,4 +1,6 @@
 export * from "./adapters.ts";
+export * from "./callbacks.ts";
+export * from "./checks.ts";
 export * from "./evidence.ts";
 export * from "./harness.ts";
 export * from "./profiles.ts";

@@ -41,6 +41,7 @@ describe("evidence manifest", () => {
       events: [],
       id: "job_123",
       issue: "APP-1234",
+      kind: "change",
       metadata: {},
       profile: "generic",
       prompt: "Fix it",
@@ -69,5 +70,34 @@ describe("evidence manifest", () => {
     expect(manifest.repoContract.preferredCommands).toEqual(["nix flake check"]);
     expect(manifest.commands[0]?.command).toBe("nix");
     expect(manifest.qa.summaries).toEqual(["Browser QA completed."]);
+  });
+
+  it("includes requested checks and results when the job has checks", () => {
+    const requested = [{ id: "home.visible", text: "The home page is visible." }];
+    const results = [{ id: "home.visible", verdict: "pass" as const }];
+    const job: Job = {
+      approvals: [],
+      artifacts: [],
+      branch: "codex/verify-home",
+      checks: requested,
+      createdAt: "2026-07-16T00:00:00.000Z",
+      events: [],
+      id: "job_verify",
+      kind: "verify",
+      metadata: {},
+      profile: "generic",
+      prompt: "Verify home",
+      qa: "browser",
+      repo: "https://github.com/example/app.git",
+      source: "api",
+      status: "completed",
+      updatedAt: "2026-07-16T00:01:00.000Z"
+    };
+    const manifest = createEvidenceManifest({
+      checks: { requested, results },
+      job,
+      repoContract: createRepoContract()
+    });
+    expect(manifest.checks).toEqual({ requested, results });
   });
 });

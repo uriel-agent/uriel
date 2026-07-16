@@ -1,5 +1,14 @@
+import {
+  validateJobChecks,
+  type CheckResult,
+  type JobCheck
+} from "./checks.ts";
+
 export const qaModes = ["none", "browser", "android", "both"] as const;
 export type QaMode = (typeof qaModes)[number];
+
+export const jobKinds = ["change", "verify"] as const;
+export type JobKind = (typeof jobKinds)[number];
 
 export const jobStatuses = [
   "queued",
@@ -22,6 +31,9 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export interface CreateJobRequest {
+  callbackUrl?: string;
+  checks?: JobCheck[];
+  kind?: JobKind;
   repo: string;
   prompt: string;
   profile?: RepoProfile;
@@ -29,6 +41,7 @@ export interface CreateJobRequest {
   qa?: QaMode;
   source?: JobSource;
   requestedBy?: string;
+  ref?: string;
   metadata?: Record<string, JsonValue>;
 }
 
@@ -69,14 +82,20 @@ export interface Job {
   approvals: ApprovalRequest[];
   artifacts: Artifact[];
   branch: string;
+  callbackUrl?: string;
+  checkResults?: CheckResult[];
+  checks?: JobCheck[];
   createdAt: string;
   events: JobEvent[];
   id: string;
   issue?: string;
+  kind: JobKind;
   metadata: Record<string, JsonValue>;
   profile: RepoProfile;
   prompt: string;
+  pullRequestUrl?: string;
   qa: QaMode;
+  ref?: string;
   repo: string;
   requestedBy?: string;
   source: JobSource;
@@ -108,6 +127,55 @@ export function validateCreateJobRequest(
     return { ok: false, error: "prompt must be at least 3 characters." };
   }
 
+  const kind = input.kind === undefined ? "change" : input.kind;
+  if (typeof kind !== "string" || !jobKinds.includes(kind as JobKind)) {
+    return { ok: false, error: "kind must be change or verify." };
+  }
+
+  let ref: string | undefined;
+  if (input.ref !== undefined) {
+    if (typeof input.ref !== "string") {
+      return { ok: false, error: "ref must be a string." };
+    }
+    ref = input.ref.trim();
+    if (
+      ref.length < 1 ||
+      ref.length > 255 ||
+      /[\s\u0000-\u001f\u007f]/u.test(ref) ||
+      ref.startsWith("-")
+    ) {
+      return {
+        ok: false,
+        error: "ref must be 1 to 255 characters, contain no whitespace or control characters, and not start with a hyphen."
+      };
+    }
+  }
+
+  let checks: JobCheck[] | undefined;
+  if (input.checks !== undefined) {
+    const validation = validateJobChecks(input.checks);
+    if (!validation.ok) {
+      return validation;
+    }
+    checks = validation.value;
+  }
+
+  let callbackUrl: string | undefined;
+  if (input.callbackUrl !== undefined) {
+    if (typeof input.callbackUrl !== "string" || input.callbackUrl.length > 2048) {
+      return { ok: false, error: "callbackUrl must be an HTTP(S) URL no longer than 2048 characters." };
+    }
+    try {
+      const parsed = new URL(input.callbackUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("Invalid callback URL protocol.");
+      }
+      callbackUrl = parsed.toString();
+    } catch {
+      return { ok: false, error: "callbackUrl must be an HTTP(S) URL no longer than 2048 characters." };
+    }
+  }
+
   const qa = normalizeQaMode(input.qa);
   const source = normalizeJobSource(input.source);
   const profile = readOptionalString(input, "profile");
@@ -118,12 +186,16 @@ export function validateCreateJobRequest(
   return {
     ok: true,
     value: {
+      ...(callbackUrl ? { callbackUrl } : {}),
+      ...(checks ? { checks } : {}),
+      kind: kind as JobKind,
       repo: repo.trim(),
       prompt: prompt.trim(),
       ...(profile ? { profile } : {}),
       ...(issue ? { issue } : {}),
       qa,
       source,
+      ...(ref ? { ref } : {}),
       ...(requestedBy ? { requestedBy } : {}),
       metadata
     }

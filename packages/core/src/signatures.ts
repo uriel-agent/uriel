@@ -1,5 +1,12 @@
 const encoder = new TextEncoder();
 
+export async function signPayloadSha256(
+  secret: string,
+  body: string
+): Promise<string> {
+  return `sha256=${await hmacHex("SHA-256", secret, body)}`;
+}
+
 export async function verifyGitHubSignature(
   secret: string,
   body: string,
