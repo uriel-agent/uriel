@@ -149,8 +149,10 @@ worker emits one warning and sends the callback without a signature.
 ## NixOS Worker
 
 The worker is designed for a generic x86_64 NixOS host with KVM enabled.
-Android QA is skipped with a diagnostic if `/dev/kvm` or an attached emulator
-is unavailable.
+The worker boots its configured AVD only where hardware virtualization is
+available (`/dev/kvm` on Linux, or macOS); otherwise Android QA runs against
+an already-attached device and is skipped with a diagnostic when none is
+attached.
 
 ```nix
 {
