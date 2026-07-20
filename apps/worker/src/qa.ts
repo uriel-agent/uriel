@@ -116,21 +116,21 @@ async function runAndroidQa(
     return "Android QA skipped: disabled by worker config.";
   }
 
-  if (!(await exists("/dev/kvm"))) {
-    await reporter.event(
-      "qa",
-      "warn",
-      "Skipping Android QA because /dev/kvm is unavailable."
-    );
-    return "Android QA skipped: /dev/kvm is unavailable.";
-  }
-
   if (!(await commandExists("adb"))) {
     await reporter.event("qa", "warn", "Skipping Android QA; adb is missing.");
     return "Android QA skipped: adb is missing.";
   }
 
-  if (config.androidAvd && (await commandExists("emulator"))) {
+  const canBootEmulator = (await exists("/dev/kvm")) || process.platform === "darwin";
+  if (!canBootEmulator) {
+    await reporter.event(
+      "qa",
+      "info",
+      "/dev/kvm is unavailable; relying on an already-booted emulator or attached device."
+    );
+  }
+
+  if (canBootEmulator && config.androidAvd && (await commandExists("emulator"))) {
     await reporter.event("qa", "info", `Ensuring Android AVD ${config.androidAvd} is booted.`);
     await runObservedCommand(evidence, "sh", [
       "-lc",
