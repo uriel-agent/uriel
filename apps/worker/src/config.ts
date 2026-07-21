@@ -5,6 +5,8 @@ export interface WorkerConfig {
   browserUrl?: string;
   callbackSecret?: string;
   claudeModel?: string;
+  codexEffort?: string;
+  codexModel?: string;
   dryRun: boolean;
   enableAndroidQa: boolean;
   enableBrowserQa: boolean;
@@ -33,6 +35,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     browserUrl: env.URIEL_BROWSER_URL,
     callbackSecret: env.URIEL_CALLBACK_SECRET,
     claudeModel: env.URIEL_CLAUDE_MODEL,
+    codexEffort: env.URIEL_CODEX_EFFORT,
+    codexModel: env.URIEL_CODEX_MODEL,
     dryRun: env.URIEL_DRY_RUN === "1" || env.URIEL_DRY_RUN === "true",
     enableAndroidQa: env.URIEL_ENABLE_ANDROID_QA !== "false",
     enableBrowserQa: env.URIEL_ENABLE_BROWSER_QA !== "false",

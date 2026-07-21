@@ -100,7 +100,9 @@ nix run .#urielctl -- submit \
 Verify jobs create a worktree at the requested ref, run the harness and QA,
 collect per-check verdicts and evidence, and do not push a branch or open a
 pull request. `urielctl status <job-id>` prints stored check results after the
-job JSON.
+job JSON. For each check, the harness captures a before screenshot, a short
+during recording, and an after screenshot; static-state checks need only a
+screenshot.
 
 ## Completion Webhooks
 
@@ -191,6 +193,8 @@ Common variables:
 - `OPENCODE_MODEL`
 - `URIEL_ADAPTER_HARNESS`
 - `URIEL_CLAUDE_MODEL`
+- `URIEL_CODEX_MODEL`
+- `URIEL_CODEX_EFFORT`
 - `URIEL_MAX_CONCURRENT_JOBS`
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
@@ -201,6 +205,8 @@ Common variables:
 The `claude-code` harness authenticates through the environment file: set
 `ANTHROPIC_API_KEY`, or a long-lived subscription token minted with
 `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`).
+`URIEL_CODEX_MODEL` and `URIEL_CODEX_EFFORT` optionally select the model and
+reasoning effort used by the `codex` harness.
 
 Optional issue tracker adapters can use generic adapter variables such as
 `URIEL_ADAPTER_ISSUE_TRACKER`, `URIEL_ADAPTER_ISSUE_TRACKER_API_KEY`,
@@ -218,8 +224,8 @@ bundle of adapter choices, not a hardcoded repository identity.
 
 Adapter dimensions:
 
-- Harness: OpenCode (default) or Claude Code; Hermes can be added as an
-  optional harness
+- Harness: OpenCode (default), Claude Code, or Codex; Hermes can be added as
+  an optional harness
 - Issue tracker: optional adapter selected by name; no default
 - Repo bootstrap: optional, currently `direnv`
 - QA capability: `browser`, `android`, or both
