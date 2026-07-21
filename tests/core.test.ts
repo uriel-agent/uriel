@@ -32,6 +32,17 @@ describe("branch naming", () => {
     ).toBe("codex/app-1234-fix-event-detail-registration-status");
   });
 
+  it("appends the unique suffix so identical requests never collide", () => {
+    const request = {
+      prompt: "Fix event detail registration status",
+      repo: "https://github.com/example/product.git"
+    };
+    expect(buildBranchName(request, "a1b2c3")).toBe(
+      "codex/fix-event-detail-registration-status-a1b2c3"
+    );
+    expect(buildBranchName(request, "a1b2c3").length).toBeLessThanOrEqual(120);
+  });
+
   it("creates stable repo cache keys", () => {
     expect(repoCacheKey("https://github.com/example/product.git")).toBe("example-product");
   });

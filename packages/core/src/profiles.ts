@@ -58,13 +58,15 @@ export function detectRepoProfile(
 }
 
 export function buildBranchName(
-  request: Pick<CreateJobRequest, "issue" | "prompt" | "repo">
+  request: Pick<CreateJobRequest, "issue" | "prompt" | "repo">,
+  uniqueSuffix?: string
 ): string {
   const issuePrefix = request.issue ? slugify(request.issue) : undefined;
   const taskSlug = slugify(request.prompt).split("-").slice(0, 6).join("-");
   const fallback = slugify(parseGitHubRepo(request.repo)?.name ?? "task");
   const parts = [issuePrefix, taskSlug || fallback].filter(Boolean);
-  return `codex/${parts.join("-")}`.slice(0, 120);
+  const suffix = uniqueSuffix ? `-${slugify(uniqueSuffix)}` : "";
+  return `codex/${parts.join("-")}`.slice(0, 120 - suffix.length) + suffix;
 }
 
 export function worktreeSlug(branchName: string): string {
