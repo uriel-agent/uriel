@@ -31,6 +31,9 @@ URIEL_ADAPTER_REPO_BOOTSTRAP=direnv
 # Optional: run jobs with the Claude Code harness.
 # URIEL_ADAPTER_HARNESS=claude-code
 # ANTHROPIC_API_KEY=...
+# Optional Codex selection knobs when URIEL_ADAPTER_HARNESS=codex.
+# URIEL_CODEX_MODEL=gpt-5.6-sol
+# URIEL_CODEX_EFFORT=high
 ```
 
 Issue tracker, chat, and ingress integrations are optional adapters. Add their
@@ -44,6 +47,13 @@ authentication comes from `environmentFiles`: set `ANTHROPIC_API_KEY`, or a
 long-lived subscription token minted with `claude setup-token`
 (`CLAUDE_CODE_OAUTH_TOKEN`). The worker user's home is the state directory, so
 Claude CLI state lives under `/var/lib/uriel`.
+
+### Codex Harness
+
+Select the Codex harness globally with `URIEL_ADAPTER_HARNESS=codex` or per
+job with `urielctl submit --harness codex`. The Codex CLI must be installed
+and authenticated for the worker user on the worker host; its authentication
+state lives under `~/.codex`.
 
 Useful NixOS module knobs:
 

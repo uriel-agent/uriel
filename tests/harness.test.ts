@@ -81,9 +81,43 @@ describe("harness invocations", () => {
     });
   });
 
+  it("builds the codex invocation with model and effort", () => {
+    expect(
+      buildHarnessInvocation("codex", {
+        ...request,
+        effort: "high",
+        model: "gpt-5.6-sol"
+      })
+    ).toEqual({
+      args: [
+        "exec",
+        "--yolo",
+        "-m",
+        "gpt-5.6-sol",
+        "-c",
+        'model_reasoning_effort="high"',
+        "Fix the failing tests"
+      ],
+      command: "codex",
+      transcriptArtifact: "codex-transcript.jsonl"
+    });
+  });
+
+  it("omits the codex effort flag when effort is not configured", () => {
+    const invocation = buildHarnessInvocation("codex", request);
+
+    expect(invocation.args).toEqual([
+      "exec",
+      "--yolo",
+      "Fix the failing tests"
+    ]);
+    expect(invocation.args).not.toContain("-c");
+  });
+
   it("accepts known harness ids and rejects unknown ones", () => {
     expect(isHarnessId("claude-code")).toBe(true);
+    expect(isHarnessId("codex")).toBe(true);
     expect(isHarnessId("opencode")).toBe(true);
-    expect(isHarnessId("codex")).toBe(false);
+    expect(isHarnessId("unknown")).toBe(false);
   });
 });

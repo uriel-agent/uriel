@@ -1,4 +1,4 @@
-export const harnessIds = ["claude-code", "opencode"] as const;
+export const harnessIds = ["claude-code", "codex", "opencode"] as const;
 
 export type HarnessId = (typeof harnessIds)[number];
 
@@ -14,6 +14,7 @@ export interface HarnessInvocation {
 
 export interface HarnessInvocationRequest {
   branch: string;
+  effort?: string;
   model?: string;
   prompt: string;
   worktree: string;
@@ -37,6 +38,20 @@ export function buildHarnessInvocation(
         ],
         command: "claude",
         transcriptArtifact: "claude-code-transcript.jsonl"
+      };
+    case "codex":
+      return {
+        args: [
+          "exec",
+          "--yolo",
+          ...(request.model ? ["-m", request.model] : []),
+          ...(request.effort
+            ? ["-c", `model_reasoning_effort="${request.effort}"`]
+            : []),
+          request.prompt
+        ],
+        command: "codex",
+        transcriptArtifact: "codex-transcript.jsonl"
       };
     case "opencode":
       return {

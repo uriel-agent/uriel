@@ -48,3 +48,16 @@ Every worker job writes an `evidence.json` artifact. It contains:
 
 This manifest is the stable source for future PR comments, chat notifications,
 and external artifact publishers.
+
+## Per-Check Evidence Protocol
+
+For each verification check, capture `<check-id>-before.png` before exercising
+the flow, `<check-id>-during.mp4` while exercising it, and
+`<check-id>-after.png` after it completes. Keep each recording under 60
+seconds; a static state needs only a screenshot. Numeric suffixes distinguish
+extra captures.
+
+Checks may use only the environment and credentials explicitly provided to the
+job. They must not read host credential stores, host tokens, secret-manager
+CLIs, or environment files outside the worktree. A check that lacks required
+access receives an `unsure` verdict that states what is missing.

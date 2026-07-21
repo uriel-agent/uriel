@@ -17,7 +17,7 @@ import {
 import type { WorkerConfig } from "./config.ts";
 import { EvidenceRecorder } from "./evidence.ts";
 import { ensureLinearIssue } from "./linear.ts";
-import { runQa } from "./qa.ts";
+import { ensureAndroidDevice, recordAndroidClip, runQa } from "./qa.ts";
 import { JobReporter } from "./reporter.ts";
 import {
   commandExists,
@@ -45,6 +45,25 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     const worktree = await prepareWorktree(job, config, reporter, evidence);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
+    if ((job.qa === "android" || job.qa === "both") && config.enableAndroidQa) {
+      try {
+        if (await ensureAndroidDevice(config, reporter, evidence)) {
+          await recordAndroidClip(
+            "before-qa-screenrecord.mp4",
+            10,
+            artifactsDir,
+            reporter,
+            evidence
+          );
+        }
+      } catch (error) {
+        await reporter.event(
+          "qa",
+          "warn",
+          `Skipping pre-harness Android recording: ${errorMessage(error)}`
+        );
+      }
+    }
     let harnessError: unknown;
     let harnessFailed = false;
     try {
@@ -268,9 +287,12 @@ async function runHarness(
     throw new Error(`Unknown harness adapter: ${harnessId}.`);
   }
 
+  const harnessConfig = harnessId === "codex"
+    ? { effort: config.codexEffort, model: config.codexModel }
+    : { model: harnessId === "opencode" ? config.opencodeModel : config.claudeModel };
   const invocation = buildHarnessInvocation(harnessId, {
     branch: job.branch,
-    model: harnessId === "opencode" ? config.opencodeModel : config.claudeModel,
+    ...harnessConfig,
     prompt: buildPrompt(job, artifactsDir),
     worktree
   });

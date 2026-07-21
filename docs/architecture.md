@@ -22,7 +22,7 @@ For every job, the worker:
    exists.
 5. Lists `just` recipes when a `justfile` exists.
 6. Runs profile adapter setup such as `direnv allow`.
-7. Runs the selected harness, OpenCode by default or Claude Code when
+7. Runs the selected harness, OpenCode by default, or Claude Code or Codex when
    configured.
 8. Runs requested browser and/or Android QA.
 9. Commits changes, pushes the branch, and creates a draft PR with `gh`.
@@ -91,7 +91,9 @@ array or `{ "results": [...] }`. Each result identifies a requested check and
 uses a `pass`, `fail`, `unsure`, or `skipped` verdict; missing or invalid
 results become `unsure` for human review. Evidence files named by results are
 registered as job artifacts. Verify jobs do not push branches or open pull
-requests.
+requests. Each flow records its relevant state before, during, and after the
+check, with recordings kept under 60 seconds; static-state checks need only a
+screenshot.
 
 Any job may provide a callback URL. After the final evidence manifest is
 written, the worker posts a `job.completed` or `job.failed` payload containing

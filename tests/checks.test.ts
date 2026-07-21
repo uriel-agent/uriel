@@ -153,6 +153,13 @@ describe("verification prompt", () => {
     expect(prompt).toContain("[login.submit]");
     expect(prompt).toContain("/artifacts/check-results.json");
     expect(prompt).toContain("/artifacts");
+    expect(prompt).toContain('"<check-id>-before.png"');
+    expect(prompt).toContain('"<check-id>-during.mp4"');
+    expect(prompt).toContain('"<check-id>-after.png"');
     expect(prompt).toContain("never guess a pass");
+    expect(prompt).toContain(
+      "Scope guardrail: use ONLY the environment and credentials this job explicitly provides."
+    );
+    expect(prompt).toContain("Never read host credential stores or secret-manager CLIs");
   });
 });
