@@ -122,6 +122,9 @@ async function prepareWorktree(
     ? await resolveWorktreeRef(job.ref, cacheDir, reporter, evidence)
     : "origin/main";
 
+  await runObservedCommand(evidence, "git", ["-C", cacheDir, "worktree", "prune"], {
+    timeoutMs: 60_000
+  });
   await reporter.event("repo", "info", `Creating worktree ${job.branch}.`, {
     ref: worktreeRef,
     worktree

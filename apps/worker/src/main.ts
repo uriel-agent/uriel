@@ -208,15 +208,16 @@ function drainQueue(maxConcurrentJobs: number): void {
 
 function createJob(request: CreateJobRequest): Job {
   const now = new Date().toISOString();
+  const id = createId("job");
   return {
     approvals: [],
     artifacts: [],
-    branch: buildBranchName(request),
+    branch: buildBranchName(request, id.slice(-6)),
     callbackUrl: request.callbackUrl,
     checks: request.checks,
     createdAt: now,
     events: [],
-    id: createId("job"),
+    id,
     issue: request.issue,
     kind: request.kind ?? "change",
     metadata: request.metadata ?? {},
