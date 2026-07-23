@@ -158,8 +158,8 @@ describe("verification prompt", () => {
     expect(prompt).toContain('"<check-id>-after.png"');
     expect(prompt).toContain("never guess a pass");
     expect(prompt).toContain(
-      "Scope guardrail: use ONLY the environment and credentials this job explicitly provides."
+      "Scope guardrail: use ONLY the environment, credentials, and tooling this job's prompt explicitly provides or sanctions."
     );
-    expect(prompt).toContain("Never read host credential stores or secret-manager CLIs");
+    expect(prompt).toContain("never read host credential stores or secret-manager CLIs");
   });
 });

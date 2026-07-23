@@ -162,7 +162,7 @@ export function buildChecksPromptSection(
     '  - "fail": you directly observed the outcome NOT holding; capture evidence of the failure.',
     '  - "unsure": you could not reach the required state, the outcome is subjective, or you have any doubt. Unsure is a first-class outcome that escalates to a human reviewer — never guess a pass.',
     '  - "skipped": the check does not apply to this job.',
-    '- Scope guardrail: use ONLY the environment and credentials this job explicitly provides. Never read host credential stores or secret-manager CLIs (doppler, vault, aws, gcloud, op, keychain), env files outside the worktree, or tokens belonging to the host machine. If a check needs access you do not have, verdict it "unsure" and state exactly what is missing.',
+    '- Scope guardrail: use ONLY the environment, credentials, and tooling this job\'s prompt explicitly provides or sanctions. Beyond that sanctioned scope, never read host credential stores or secret-manager CLIs (doppler, vault, aws, gcloud, op, keychain), env files outside the worktree, or tokens belonging to the host machine. If a check needs access you do not have, verdict it "unsure" and state exactly what is missing.',
     "- notes: 1-3 sentences on what you did and what you observed.",
     "- artifacts: names of files you saved under the evidence directory that support the verdict.",
     "",
