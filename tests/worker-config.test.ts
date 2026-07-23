@@ -36,4 +36,11 @@ describe("worker config", () => {
     expect(config.codexEffort).toBe("high");
     expect(config.codexModel).toBe("gpt-5.6-sol");
   });
+
+  it("parses the harness timeout with a 45-minute default", () => {
+    expect(loadConfig({}).harnessTimeoutMinutes).toBe(45);
+    expect(loadConfig({ URIEL_HARNESS_TIMEOUT_MINUTES: "120" }).harnessTimeoutMinutes).toBe(120);
+    expect(loadConfig({ URIEL_HARNESS_TIMEOUT_MINUTES: "junk" }).harnessTimeoutMinutes).toBe(45);
+    expect(loadConfig({ URIEL_HARNESS_TIMEOUT_MINUTES: "-5" }).harnessTimeoutMinutes).toBe(1);
+  });
 });
