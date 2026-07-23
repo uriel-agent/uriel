@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildChecksPromptSection,
+  enforceCheckResultEvidence,
   parseCheckResults,
   validateJobChecks,
   type JobCheck
@@ -73,6 +74,59 @@ describe("check result parsing", () => {
     expect(parsed.warnings).toEqual([]);
   });
 
+  it("parses structured evidence and derives callback-compatible artifact names", () => {
+    const parsed = parseCheckResults(
+      JSON.stringify({
+        results: [
+          {
+            evidence: [
+              {
+                artifact: "login-outcome.png",
+                description: "The signed-in home screen is visible.",
+                role: "outcome"
+              }
+            ],
+            id: "login.visible",
+            verdict: "pass"
+          }
+        ]
+      }),
+      checks.slice(0, 1)
+    );
+
+    expect(parsed.results[0]).toEqual({
+      artifacts: ["login-outcome.png"],
+      evidence: [
+        {
+          artifact: "login-outcome.png",
+          description: "The signed-in home screen is visible.",
+          role: "outcome"
+        }
+      ],
+      id: "login.visible",
+      verdict: "pass"
+    });
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("drops malformed structured evidence with a warning", () => {
+    const parsed = parseCheckResults(
+      JSON.stringify({
+        results: [
+          {
+            evidence: [{ artifact: "login.png", description: "", role: "outcome" }],
+            id: "login.visible",
+            verdict: "pass"
+          }
+        ]
+      }),
+      checks.slice(0, 1)
+    );
+
+    expect(parsed.results[0]?.evidence).toEqual([]);
+    expect(parsed.warnings[0]).toContain("invalid evidence");
+  });
+
   it("accepts a bare array", () => {
     const parsed = parseCheckResults(
       JSON.stringify([{ id: "login.visible", verdict: "skipped" }]),
@@ -142,6 +196,53 @@ describe("check result parsing", () => {
   });
 });
 
+describe("check result evidence honesty", () => {
+  it("keeps a pass backed by outcome evidence", () => {
+    const result = {
+      evidence: [
+        {
+          artifact: "login-outcome.png",
+          description: "The signed-in home screen is visible.",
+          role: "outcome" as const
+        }
+      ],
+      id: "login.visible",
+      verdict: "pass" as const
+    };
+
+    expect(enforceCheckResultEvidence(result)).toEqual(result);
+  });
+
+  it("downgrades a pass backed only by setup evidence", () => {
+    expect(
+      enforceCheckResultEvidence({
+        evidence: [
+          {
+            artifact: "login-setup.png",
+            description: "The login form is ready before submission.",
+            role: "setup"
+          }
+        ],
+        id: "login.visible",
+        notes: "The flow was ready.",
+        verdict: "pass"
+      })
+    ).toEqual({
+      evidence: [
+        {
+          artifact: "login-setup.png",
+          description: "The login form is ready before submission.",
+          role: "setup"
+        }
+      ],
+      id: "login.visible",
+      notes:
+        "The flow was ready. Reported pass was downgraded to unsure because no captured outcome evidence proved the result.",
+      verdict: "unsure"
+    });
+  });
+});
+
 describe("verification prompt", () => {
   it("contains the checks and output locations", () => {
     const prompt = buildChecksPromptSection(
@@ -153,9 +254,11 @@ describe("verification prompt", () => {
     expect(prompt).toContain("[login.submit]");
     expect(prompt).toContain("/artifacts/check-results.json");
     expect(prompt).toContain("/artifacts");
-    expect(prompt).toContain('"<check-id>-before.png"');
-    expect(prompt).toContain('"<check-id>-during.mp4"');
-    expect(prompt).toContain('"<check-id>-after.png"');
+    expect(prompt).toContain('"<check-id>-setup.png"');
+    expect(prompt).toContain('"<check-id>-action.mp4"');
+    expect(prompt).toContain('"<check-id>-outcome.png"');
+    expect(prompt).toContain('"role":"outcome"');
+    expect(prompt).toContain("A setup capture never proves a pass by itself.");
     expect(prompt).toContain("never guess a pass");
     expect(prompt).toContain(
       "Scope guardrail: use ONLY the environment, credentials, and tooling this job's prompt explicitly provides or sanctions."

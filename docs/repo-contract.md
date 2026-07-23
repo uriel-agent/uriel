@@ -51,11 +51,16 @@ and external artifact publishers.
 
 ## Per-Check Evidence Protocol
 
-For each verification check, capture `<check-id>-before.png` before exercising
-the flow, `<check-id>-during.mp4` while exercising it, and
-`<check-id>-after.png` after it completes. Keep each recording under 60
-seconds; a static state needs only a screenshot. Numeric suffixes distinguish
-extra captures.
+For each verification check, capture `<check-id>-setup.png` before exercising
+the flow, `<check-id>-action.mp4` while exercising it when useful, and
+`<check-id>-outcome.png` after it completes. Keep each recording under 60
+seconds; a static state needs only a screenshot. Descriptive or numeric
+suffixes distinguish materially different observations.
+
+Each result references evidence with an artifact name, a role (`setup`,
+`action`, `outcome`, or `diagnostic`), and a concrete description of what the
+artifact proves. A pass must retain at least one registered `outcome`
+artifact. The worker downgrades a pass without one to `unsure`.
 
 Checks may use only the environment and credentials explicitly provided to the
 job. They must not read host credential stores, host tokens, secret-manager
