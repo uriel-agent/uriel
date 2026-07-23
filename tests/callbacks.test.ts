@@ -48,6 +48,37 @@ describe("job callback payload", () => {
     expect(buildJobCallbackPayload(createJob(), "Done").checks).toBeNull();
   });
 
+  it("preserves structured per-check evidence in callbacks", () => {
+    const payload = buildJobCallbackPayload(
+      createJob({
+        checks: [{ id: "home.visible", text: "The home screen is visible." }],
+        checkResults: [
+          {
+            artifacts: ["screen.png"],
+            evidence: [
+              {
+                artifact: "screen.png",
+                description: "The home screen is visible after launch.",
+                role: "outcome"
+              }
+            ],
+            id: "home.visible",
+            verdict: "pass"
+          }
+        ]
+      }),
+      "Done"
+    );
+
+    expect(payload.checks?.results[0]?.evidence).toEqual([
+      {
+        artifact: "screen.png",
+        description: "The home screen is visible after launch.",
+        role: "outcome"
+      }
+    ]);
+  });
+
   it("maps completed and failed events", () => {
     expect(buildJobCallbackPayload(createJob(), "Done").event).toBe("job.completed");
     expect(

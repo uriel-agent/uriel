@@ -90,10 +90,11 @@ requested `ref` (or `origin/main` when no ref is supplied). The harness writes
 array or `{ "results": [...] }`. Each result identifies a requested check and
 uses a `pass`, `fail`, `unsure`, or `skipped` verdict; missing or invalid
 results become `unsure` for human review. Evidence files named by results are
-registered as job artifacts. Verify jobs do not push branches or open pull
-requests. Each flow records its relevant state before, during, and after the
-check, with recordings kept under 60 seconds; static-state checks need only a
-screenshot.
+registered as job artifacts. Each evidence reference describes its role and
+what it visibly proves. A pass without a registered `outcome` artifact is
+downgraded to `unsure`. Verify jobs do not push branches or open pull requests.
+Each flow records its relevant setup, action when useful, and outcome, with
+recordings kept under 60 seconds; static-state checks need only a screenshot.
 
 Any job may provide a callback URL. After the final evidence manifest is
 written, the worker posts a `job.completed` or `job.failed` payload containing

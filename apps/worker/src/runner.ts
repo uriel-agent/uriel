@@ -5,6 +5,7 @@ import {
   buildChecksPromptSection,
   buildHarnessInvocation,
   buildJobCallbackPayload,
+  enforceCheckResultEvidence,
   isHarnessId,
   parseCheckResults,
   parseJustRecipes,
@@ -399,10 +400,20 @@ async function collectCheckResults(
         );
       }
     }
-    results.push({
+    const evidence = result.evidence?.filter((item) => artifactNames.has(item.artifact));
+    const verifiedResult = enforceCheckResultEvidence({
       ...result,
-      ...(result.artifacts ? { artifacts } : {})
+      ...(result.artifacts ? { artifacts } : {}),
+      ...(result.evidence ? { evidence } : {})
     });
+    if (verifiedResult.verdict !== result.verdict) {
+      await reporter.event(
+        "qa",
+        "warn",
+        `Downgraded check result "${result.id}" from pass to unsure because it has no captured outcome evidence.`
+      );
+    }
+    results.push(verifiedResult);
   }
   await store.setCheckResults(job.id, results);
 }
