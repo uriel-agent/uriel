@@ -60,9 +60,14 @@ Useful NixOS module knobs:
 - `allowedRepos`: restricts the worker to specific GitHub URLs or `owner/repo`
   slugs.
 - `maxConcurrentJobs`: caps local worker concurrency.
+- `callbackTimeoutSeconds`: allows artifact-heavy consumers enough time to
+  acknowledge completion callbacks (default 60 seconds per attempt).
 - `artifactRetentionDays`: enables tmpfiles cleanup for local artifacts.
 - `enableBrowserQa` / `enableAndroidQa`: include or disable QA toolchains.
 - `extraPackages`: adds repo-specific tools to the worker service `PATH`.
+- `androidSerial`, `androidEmulatorPath`, and `androidBootTimeoutSeconds`:
+  pin Android QA to one device, override emulator discovery, and tune cold-boot
+  tolerance.
 
 Deploy the host:
 
@@ -102,6 +107,13 @@ ls -l /dev/kvm
 The NixOS module adds the `uriel` user to `kvm`, `video`, `render`, and
 `adbusers`. If no emulator is booted, Android QA is skipped with a diagnostic
 instead of failing the entire job.
+
+When more than one adb device is attached, set `androidSerial` (or
+`URIEL_ANDROID_SERIAL`) so captures and harness commands cannot drift to
+another job's emulator. Uriel discovers the emulator binary from
+`URIEL_ANDROID_EMULATOR_PATH`, the Android SDK environment, the standard macOS
+SDK location, or `PATH`, in that order. Cold boots wait up to five minutes by
+default.
 
 ## 4. Optional Ingress
 

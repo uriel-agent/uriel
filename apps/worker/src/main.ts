@@ -12,16 +12,10 @@ import {
   validateCreateJobRequest
 } from "../../../packages/core/src/index.ts";
 import { loadConfig, type WorkerConfig } from "./config.ts";
-import { runJob } from "./runner.ts";
+import { runJob, sendJobCallback } from "./runner.ts";
+import { JobReporter } from "./reporter.ts";
+import { JobScheduler } from "./scheduler.ts";
 import { LocalJobStore } from "./store.ts";
-
-const scheduler: {
-  active: number;
-  pending: Array<() => Promise<void>>;
-} = {
-  active: 0,
-  pending: []
-};
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -48,20 +42,36 @@ async function main(argv: string[]): Promise<void> {
 }
 
 async function serve(config: WorkerConfig): Promise<void> {
-  await new LocalJobStore(config).init();
+  const store = new LocalJobStore(config);
+  await store.init();
+  const recoverySummary =
+    "Worker restarted while this job was running; the interrupted job cannot be resumed safely.";
+  const strandedJobs = await store.failRunningJobs(recoverySummary);
+  const queuedJobs = (await store.listJobs())
+    .filter((job) => job.status === "queued")
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const scheduler = new JobScheduler(config.maxConcurrentJobs);
   const server = createServer((request, response) => {
-    void handleRequest(request, response, config);
+    void handleRequest(request, response, config, scheduler);
   });
   await new Promise<void>((resolve) => {
     server.listen(config.port, config.host, resolve);
   });
   console.log(`uriel-worker listening on http://${config.host}:${config.port}`);
+  for (const job of queuedJobs) {
+    enqueueJob(job, config, scheduler);
+  }
+  for (const job of strandedJobs) {
+    const reporter = new JobReporter({ jobId: job.id, store });
+    void sendJobCallback(job, config, reporter, recoverySummary);
+  }
 }
 
 async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  config: WorkerConfig
+  config: WorkerConfig,
+  scheduler: JobScheduler
 ): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
@@ -94,7 +104,7 @@ async function handleRequest(
       }
       const store = new LocalJobStore(config);
       const job = await store.putJob(createJob(validation.value));
-      enqueueJob(job, config);
+      enqueueJob(job, config, scheduler);
       writeJson(response, 202, { ok: true, jobId: job.id });
       return;
     }
@@ -112,10 +122,21 @@ async function handleRequest(
 
     const cancelMatch = /^\/jobs\/([^/]+)\/cancel$/u.exec(url.pathname);
     if (request.method === "POST" && cancelMatch?.[1]) {
-      const job = await new LocalJobStore(config).setStatus(
-        decodeURIComponent(cancelMatch[1]),
-        "cancelled"
-      );
+      const jobId = decodeURIComponent(cancelMatch[1]);
+      const store = new LocalJobStore(config);
+      const existing = await store.getJob(jobId);
+      if (!existing) {
+        writeJson(response, 404, { error: "Job not found." });
+        return;
+      }
+      if (existing.status !== "queued") {
+        writeJson(response, 409, {
+          error: `Only queued jobs can be cancelled; job is ${existing.status}.`
+        });
+        return;
+      }
+      scheduler.cancel(jobId);
+      const job = await store.setStatus(jobId, "cancelled");
       if (!job) {
         writeJson(response, 404, { error: "Job not found." });
         return;
@@ -142,6 +163,7 @@ async function handleRequest(
       };
       await store.putJob(next);
       await store.appendEvent(jobId, createJobEvent("approval", "info", `Approved step ${stepId}.`));
+      enqueueJob(next, config, scheduler);
       writeJson(response, 200, await store.getJob(jobId));
       return;
     }
@@ -183,27 +205,21 @@ async function handleRequest(
   }
 }
 
-function enqueueJob(job: Job, config: WorkerConfig): void {
-  scheduler.pending.push(() => runJob(job, config));
-  drainQueue(config.maxConcurrentJobs);
-}
-
-function drainQueue(maxConcurrentJobs: number): void {
-  while (scheduler.active < maxConcurrentJobs && scheduler.pending.length > 0) {
-    const run = scheduler.pending.shift();
-    if (!run) {
-      return;
+function enqueueJob(
+  job: Job,
+  config: WorkerConfig,
+  scheduler: JobScheduler
+): void {
+  scheduler.enqueue({
+    id: job.id,
+    run: async () => {
+      const latest = await new LocalJobStore(config).getJob(job.id);
+      if (latest?.status !== "queued") {
+        return;
+      }
+      await runJob(latest, config);
     }
-    scheduler.active += 1;
-    void run()
-      .catch((error) => {
-        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-      })
-      .finally(() => {
-        scheduler.active -= 1;
-        drainQueue(maxConcurrentJobs);
-      });
-  }
+  });
 }
 
 function createJob(request: CreateJobRequest): Job {

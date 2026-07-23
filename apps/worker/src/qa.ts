@@ -1,4 +1,5 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -20,7 +21,8 @@ export async function runQa(
   config: WorkerConfig,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  androidSerial?: string
 ): Promise<string[]> {
   const summaries: string[] = [];
   if (job.qa === "none") {
@@ -33,7 +35,16 @@ export async function runQa(
   }
 
   if (job.qa === "android" || job.qa === "both") {
-    summaries.push(await runAndroidQa(job, config, artifactsDir, reporter, evidence));
+    summaries.push(
+      await runAndroidQa(
+        job,
+        config,
+        artifactsDir,
+        reporter,
+        evidence,
+        androidSerial
+      )
+    );
   }
 
   return summaries;
@@ -111,19 +122,29 @@ async function runAndroidQa(
   config: WorkerConfig,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  requestedSerial?: string
 ): Promise<string> {
   if (!config.enableAndroidQa) {
     await reporter.event("qa", "warn", "Skipping Android QA; Android QA is disabled.");
     return "Android QA skipped: disabled by worker config.";
   }
 
-  if (!(await ensureAndroidDevice(config, reporter, evidence))) {
+  const serial =
+    requestedSerial ?? (await ensureAndroidDevice(config, reporter, evidence));
+  if (!serial) {
     return "Android QA skipped: no booted adb device is attached.";
   }
 
   const recordingName = "android-screenrecord.mp4";
-  await recordAndroidClip(recordingName, 10, artifactsDir, reporter, evidence);
+  await recordAndroidClip(
+    recordingName,
+    10,
+    artifactsDir,
+    reporter,
+    evidence,
+    serial
+  );
   if (!(await exists(join(artifactsDir, recordingName)))) {
     return "Android QA failed: screenrecord failed.";
   }
@@ -134,7 +155,10 @@ async function runAndroidQa(
       evidence,
       "maestro",
       ["test", job.metadata.maestroFlow],
-      { timeoutMs: 180_000 }
+      {
+        env: { ANDROID_SERIAL: serial },
+        timeoutMs: 180_000
+      }
     );
     await writeFile(join(artifactsDir, "maestro.log"), maestro.stdout + maestro.stderr);
     await uploadIfExists("maestro.log", join(artifactsDir, "maestro.log"), "text/plain", reporter);
@@ -148,10 +172,10 @@ export async function ensureAndroidDevice(
   config: WorkerConfig,
   reporter: JobReporter,
   evidence?: EvidenceRecorder
-): Promise<boolean> {
+): Promise<string | undefined> {
   if (!(await commandExists("adb"))) {
     await reporter.event("qa", "warn", "Skipping Android QA; adb is missing.");
-    return false;
+    return undefined;
   }
 
   const canBootEmulator = (await exists("/dev/kvm")) || process.platform === "darwin";
@@ -163,62 +187,98 @@ export async function ensureAndroidDevice(
     );
   }
 
-  let waitForBoot = false;
-  if (canBootEmulator && config.androidAvd && (await commandExists("emulator"))) {
+  const emulatorCommand = await resolveEmulatorCommand(config);
+  let serial = config.androidSerial;
+  if (!serial && config.androidAvd) {
+    serial = await serialForAvd(config.androidAvd, evidence);
+  }
+
+  let waitForBoot = Boolean(serial);
+  if (canBootEmulator && config.androidAvd && emulatorCommand && !serial) {
     await reporter.event("qa", "info", `Ensuring Android AVD ${config.androidAvd} is booted.`);
-    const emulator = await runObservedCommand(
-      evidence,
-      "pgrep",
-      ["-f", `emulator.*${config.androidAvd}`]
-    );
-    if (emulator.code !== 0) {
-      const avd = quote(config.androidAvd);
-      await runObservedCommand(evidence, "sh", [
-        "-lc",
-        `nohup emulator -avd ${avd} -no-snapshot -no-audio -no-window >/tmp/uriel-emulator.log 2>&1 &`
-      ]);
-    }
+    const avd = quote(config.androidAvd);
+    const executable = quote(emulatorCommand);
+    const logName = config.androidAvd.replace(/[^a-zA-Z0-9_.-]/gu, "_");
+    await runObservedCommand(evidence, "sh", [
+      "-lc",
+      `nohup ${executable} -avd ${avd} -no-snapshot -no-audio -no-window >/tmp/uriel-emulator-${logName}.log 2>&1 &`
+    ]);
     waitForBoot = true;
+  } else if (config.androidAvd && !emulatorCommand && !serial) {
+    await reporter.event(
+      "qa",
+      "warn",
+      `Cannot boot Android AVD ${config.androidAvd}; set URIEL_ANDROID_EMULATOR_PATH or add emulator to PATH.`
+    );
   }
 
   await runObservedCommand(evidence, "adb", ["start-server"], { timeoutMs: 30_000 });
   if (waitForBoot) {
-    const deadline = Date.now() + 180_000;
-    let bootCompleted = false;
-    while (Date.now() < deadline) {
-      const boot = await runObservedCommand(
-        evidence,
-        "adb",
-        ["shell", "getprop", "sys.boot_completed"],
-        { timeoutMs: Math.max(1, Math.min(5_000, deadline - Date.now())) }
-      );
-      if (boot.code === 0 && boot.stdout.trim() === "1") {
-        bootCompleted = true;
-        break;
-      }
-      await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
-    }
-    if (!bootCompleted) {
+    serial = await waitForAndroidBoot(config, serial, evidence);
+    if (!serial) {
       await reporter.event(
         "qa",
         "warn",
-        "Skipping Android recording because the emulator did not finish booting within 180 seconds."
+        `Skipping Android recording because the emulator did not finish booting within ${Math.round(config.androidBootTimeoutMs / 1_000)} seconds.`
       );
-      return false;
+      return undefined;
     }
   }
 
   const devices = await runObservedCommand(evidence, "adb", ["devices"], { timeoutMs: 30_000 });
-  if (!/\tdevice/u.test(devices.stdout)) {
+  const bootedSerials = parseBootedDeviceSerials(devices.stdout);
+  if (serial && !bootedSerials.includes(serial)) {
     await reporter.event(
       "qa",
       "warn",
-      "Skipping Android recording because no booted adb device is attached.",
+      `Skipping Android recording because configured device ${serial} is not booted.`,
+      { devices: devices.stdout, serial }
+    );
+    return undefined;
+  }
+  if (!serial && bootedSerials.length === 1) {
+    [serial] = bootedSerials;
+  }
+  if (!serial) {
+    await reporter.event(
+      "qa",
+      "warn",
+      bootedSerials.length === 0
+        ? "Skipping Android recording because no booted adb device is attached."
+        : "Skipping Android recording because multiple devices are attached; configure URIEL_ANDROID_SERIAL or URIEL_ANDROID_AVD.",
       { devices: devices.stdout }
     );
-    return false;
+    return undefined;
   }
-  return true;
+  await reporter.event("qa", "info", `Using Android device ${serial}.`);
+  return serial;
+}
+
+async function waitForAndroidBoot(
+  config: WorkerConfig,
+  initialSerial: string | undefined,
+  evidence?: EvidenceRecorder
+): Promise<string | undefined> {
+  const deadline = Date.now() + config.androidBootTimeoutMs;
+  let serial = initialSerial;
+  while (Date.now() < deadline) {
+    if (!serial && config.androidAvd) {
+      serial = await serialForAvd(config.androidAvd, evidence);
+    }
+    if (serial) {
+      const boot = await runObservedCommand(
+        evidence,
+        "adb",
+        ["-s", serial, "shell", "getprop", "sys.boot_completed"],
+        { timeoutMs: Math.max(1, Math.min(5_000, deadline - Date.now())) }
+      );
+      if (boot.code === 0 && boot.stdout.trim() === "1") {
+        return serial;
+      }
+    }
+    await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
+  }
+  return undefined;
 }
 
 export async function recordAndroidClip(
@@ -226,7 +286,8 @@ export async function recordAndroidClip(
   seconds: number,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  serial?: string
 ): Promise<void> {
   const remotePath = `/sdcard/uriel-${process.pid}-${Date.now()}.mp4`;
   const localPath = join(artifactsDir, name);
@@ -234,7 +295,14 @@ export async function recordAndroidClip(
   const record = await runObservedCommand(
     evidence,
     "adb",
-    ["shell", "screenrecord", "--time-limit", String(seconds), remotePath],
+    [
+      ...(serial ? ["-s", serial] : []),
+      "shell",
+      "screenrecord",
+      "--time-limit",
+      String(seconds),
+      remotePath
+    ],
     { timeoutMs: Math.max(20_000, seconds * 1_000 + 10_000) }
   );
   if (record.code !== 0) {
@@ -243,12 +311,19 @@ export async function recordAndroidClip(
     });
     return;
   }
-  const pull = await runObservedCommand(evidence, "adb", ["pull", remotePath, localPath], {
-    timeoutMs: 30_000
-  });
-  await runObservedCommand(evidence, "adb", ["shell", "rm", "-f", remotePath], {
-    timeoutMs: 30_000
-  });
+  const targetArgs = serial ? ["-s", serial] : [];
+  const pull = await runObservedCommand(
+    evidence,
+    "adb",
+    [...targetArgs, "pull", remotePath, localPath],
+    { timeoutMs: 30_000 }
+  );
+  await runObservedCommand(
+    evidence,
+    "adb",
+    [...targetArgs, "shell", "rm", "-f", remotePath],
+    { timeoutMs: 30_000 }
+  );
   if (pull.code !== 0) {
     await reporter.event("qa", "error", "Failed to pull Android recording.", {
       stderr: pull.stderr.slice(-4000)
@@ -257,6 +332,65 @@ export async function recordAndroidClip(
   }
 
   await uploadIfExists(name, localPath, "video/mp4", reporter);
+}
+
+async function resolveEmulatorCommand(
+  config: WorkerConfig
+): Promise<string | undefined> {
+  const candidates = [
+    config.androidEmulatorPath,
+    process.env.ANDROID_SDK_ROOT
+      ? join(process.env.ANDROID_SDK_ROOT, "emulator", "emulator")
+      : undefined,
+    process.env.ANDROID_HOME
+      ? join(process.env.ANDROID_HOME, "emulator", "emulator")
+      : undefined,
+    process.platform === "darwin"
+      ? join(homedir(), "Library", "Android", "sdk", "emulator", "emulator")
+      : undefined
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+  return (await commandExists("emulator")) ? "emulator" : undefined;
+}
+
+async function serialForAvd(
+  avd: string,
+  evidence?: EvidenceRecorder
+): Promise<string | undefined> {
+  const devices = await runObservedCommand(evidence, "adb", ["devices"], {
+    timeoutMs: 30_000
+  });
+  for (const serial of parseBootedDeviceSerials(devices.stdout)) {
+    if (!serial.startsWith("emulator-")) {
+      continue;
+    }
+    const result = await runObservedCommand(
+      evidence,
+      "adb",
+      ["-s", serial, "emu", "avd", "name"],
+      { timeoutMs: 5_000 }
+    );
+    const name = result.stdout
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line && line !== "OK");
+    if (result.code === 0 && name === avd) {
+      return serial;
+    }
+  }
+  return undefined;
+}
+
+export function parseBootedDeviceSerials(output: string): string[] {
+  return output
+    .split(/\r?\n/u)
+    .map((line) => /^([^\s]+)\s+device$/u.exec(line)?.[1])
+    .filter((serial): serial is string => Boolean(serial));
 }
 
 async function runObservedCommand(

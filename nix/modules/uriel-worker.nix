@@ -120,6 +120,12 @@ in
       description = "Maximum number of jobs the local worker may run at once.";
     };
 
+    callbackTimeoutSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 60;
+      description = "Timeout in seconds for each completion callback attempt.";
+    };
+
     artifactRetentionDays = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -156,6 +162,24 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Optional Android AVD name to boot before Android QA.";
+    };
+
+    androidSerial = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional adb serial to target for Android QA.";
+    };
+
+    androidEmulatorPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Optional absolute path to the Android emulator executable.";
+    };
+
+    androidBootTimeoutSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "Maximum seconds to wait for the configured Android device to boot.";
     };
 
     enableAndroidQa = lib.mkOption {
@@ -224,6 +248,8 @@ in
       environment = {
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
+        URIEL_ANDROID_BOOT_TIMEOUT_SECONDS = toString cfg.androidBootTimeoutSeconds;
+        URIEL_CALLBACK_TIMEOUT_SECONDS = toString cfg.callbackTimeoutSeconds;
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;
         URIEL_STATE_DIR = toString cfg.stateDir;
         URIEL_WORKER_HOST = cfg.host;
@@ -241,6 +267,12 @@ in
       }
       // lib.optionalAttrs (cfg.androidAvd != null) {
         URIEL_ANDROID_AVD = cfg.androidAvd;
+      }
+      // lib.optionalAttrs (cfg.androidSerial != null) {
+        URIEL_ANDROID_SERIAL = cfg.androidSerial;
+      }
+      // lib.optionalAttrs (cfg.androidEmulatorPath != null) {
+        URIEL_ANDROID_EMULATOR_PATH = toString cfg.androidEmulatorPath;
       }
       // cfg.extraEnvironment;
       serviceConfig = {

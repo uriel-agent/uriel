@@ -11,6 +11,8 @@ import {
 } from "../../../packages/core/src/index.ts";
 import type { WorkerConfig } from "./config.ts";
 
+const MAX_JOB_EVENTS = 500;
+
 export class LocalJobStore {
   readonly artifactsDir: string;
   private readonly jobsDir: string;
@@ -52,6 +54,26 @@ export class LocalJobStore {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  async failRunningJobs(reason: string): Promise<Job[]> {
+    const running = (await this.listJobs()).filter(
+      (job) => job.status === "running"
+    );
+    const recovered: Job[] = [];
+    for (const job of running) {
+      const next: Job = {
+        ...job,
+        events: [
+          ...job.events,
+          createJobEvent("worker", "error", reason)
+        ].slice(-MAX_JOB_EVENTS),
+        status: "failed",
+        updatedAt: new Date().toISOString()
+      };
+      recovered.push(await this.putJob(next));
+    }
+    return recovered;
+  }
+
   async appendEvent(jobId: string, event: JobEvent): Promise<Job | undefined> {
     const job = await this.getJob(jobId);
     if (!job) {
@@ -59,7 +81,7 @@ export class LocalJobStore {
     }
     const next = {
       ...job,
-      events: [...job.events, event].slice(-500),
+      events: [...job.events, event].slice(-MAX_JOB_EVENTS),
       updatedAt: new Date().toISOString()
     };
     await this.putJob(next);
