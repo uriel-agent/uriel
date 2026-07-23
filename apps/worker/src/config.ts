@@ -1,9 +1,13 @@
 export interface WorkerConfig {
   androidAvd?: string;
+  androidBootTimeoutMs: number;
+  androidEmulatorPath?: string;
+  androidSerial?: string;
   artifactsDir: string;
   allowedRepos: string[];
   browserUrl?: string;
   callbackSecret?: string;
+  callbackTimeoutMs: number;
   claudeModel?: string;
   codexEffort?: string;
   codexModel?: string;
@@ -31,10 +35,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const stateDir = env.URIEL_STATE_DIR ?? "/var/lib/uriel";
   return {
     androidAvd: env.URIEL_ANDROID_AVD,
+    androidBootTimeoutMs:
+      parsePositiveInteger(env.URIEL_ANDROID_BOOT_TIMEOUT_SECONDS, 300) * 1_000,
+    androidEmulatorPath: env.URIEL_ANDROID_EMULATOR_PATH,
+    androidSerial: env.URIEL_ANDROID_SERIAL,
     allowedRepos: parseCsv(env.URIEL_ALLOWED_REPOS),
     artifactsDir: env.URIEL_ARTIFACTS_DIR ?? `${stateDir}/artifacts`,
     browserUrl: env.URIEL_BROWSER_URL,
     callbackSecret: env.URIEL_CALLBACK_SECRET,
+    callbackTimeoutMs:
+      parsePositiveInteger(env.URIEL_CALLBACK_TIMEOUT_SECONDS, 60) * 1_000,
     claudeModel: env.URIEL_CLAUDE_MODEL,
     codexEffort: env.URIEL_CODEX_EFFORT,
     codexModel: env.URIEL_CODEX_MODEL,
@@ -60,6 +70,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workerToken: env.URIEL_WORKER_TOKEN,
     worktreesDir: env.URIEL_WORKTREES_DIR ?? `${stateDir}/worktrees`
   };
+}
+
+function parsePositiveInteger(
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseCsv(value: string | undefined): string[] {

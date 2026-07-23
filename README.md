@@ -188,6 +188,7 @@ Common variables:
 
 - `URIEL_WORKER_TOKEN`
 - `URIEL_CALLBACK_SECRET`
+- `URIEL_CALLBACK_TIMEOUT_SECONDS` (default `60`)
 - `URIEL_ALLOWED_REPOS`
 - `GH_TOKEN`
 - `OPENCODE_MODEL`
@@ -201,6 +202,9 @@ Common variables:
 - `URIEL_ADAPTER_REPO_BOOTSTRAP`
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
+- `URIEL_ANDROID_SERIAL`
+- `URIEL_ANDROID_EMULATOR_PATH`
+- `URIEL_ANDROID_BOOT_TIMEOUT_SECONDS` (default `300`)
 
 The `claude-code` harness authenticates through the environment file: set
 `ANTHROPIC_API_KEY`, or a long-lived subscription token minted with

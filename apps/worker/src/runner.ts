@@ -36,6 +36,7 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
   });
   const evidence = new EvidenceRecorder();
   const artifactsDir = join(config.artifactsDir, job.id);
+  let androidSerial = config.androidSerial;
 
   try {
     await mkdir(artifactsDir, { recursive: true });
@@ -47,13 +48,15 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     await runProfileSetup(job, config, worktree, reporter, evidence);
     if ((job.qa === "android" || job.qa === "both") && config.enableAndroidQa) {
       try {
-        if (await ensureAndroidDevice(config, reporter, evidence)) {
+        androidSerial = await ensureAndroidDevice(config, reporter, evidence);
+        if (androidSerial) {
           await recordAndroidClip(
             "before-qa-screenrecord.mp4",
             10,
             artifactsDir,
             reporter,
-            evidence
+            evidence,
+            androidSerial
           );
         }
       } catch (error) {
@@ -67,7 +70,15 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     let harnessError: unknown;
     let harnessFailed = false;
     try {
-      await runHarness(job, config, worktree, artifactsDir, reporter, evidence);
+      await runHarness(
+        job,
+        config,
+        worktree,
+        artifactsDir,
+        reporter,
+        evidence,
+        androidSerial
+      );
     } catch (error) {
       harnessError = error;
       harnessFailed = true;
@@ -79,7 +90,14 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     if (harnessFailed) {
       throw harnessError;
     }
-    const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence);
+    const qaSummaries = await runQa(
+      job,
+      config,
+      artifactsDir,
+      reporter,
+      evidence,
+      androidSerial
+    );
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
     }
@@ -117,17 +135,7 @@ async function prepareWorktree(
     await rm(worktree, { force: true, recursive: true });
   }
 
-  if (await exists(cacheDir)) {
-    await reporter.event("repo", "info", "Fetching latest origin/main.", {
-      cacheDir
-    });
-    await runObservedChecked(
-      evidence,
-      "git",
-      ["-C", cacheDir, "fetch", "origin", "main", "--prune"],
-      { timeoutMs: 120_000 }
-    );
-  } else {
+  if (!(await exists(cacheDir))) {
     await reporter.event("repo", "info", "Cloning bare repository cache.", {
       repo: job.repo,
       cacheDir
@@ -136,10 +144,26 @@ async function prepareWorktree(
       timeoutMs: 300_000
     });
   }
+  await reporter.event("repo", "info", "Syncing the cached main ref.", {
+    cacheDir
+  });
+  await runObservedChecked(
+    evidence,
+    "git",
+    [
+      "-C",
+      cacheDir,
+      "fetch",
+      "origin",
+      "+refs/heads/main:refs/uriel/main",
+      "--prune"
+    ],
+    { timeoutMs: 120_000 }
+  );
 
   const worktreeRef = job.ref
     ? await resolveWorktreeRef(job.ref, cacheDir, reporter, evidence)
-    : "origin/main";
+    : "refs/uriel/main";
 
   await runObservedCommand(evidence, "git", ["-C", cacheDir, "worktree", "prune"], {
     timeoutMs: 60_000
@@ -280,7 +304,8 @@ async function runHarness(
   worktree: string,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence: EvidenceRecorder
+  evidence: EvidenceRecorder,
+  androidSerial?: string
 ): Promise<void> {
   const harnessId = metadataString(job, "harness") ?? config.harnessAdapter ?? "opencode";
   if (!isHarnessId(harnessId)) {
@@ -315,6 +340,9 @@ async function runHarness(
   await reporter.event("worker", "info", `Running ${harnessId} headlessly.`);
   const result = await runObservedCommand(evidence, invocation.command, invocation.args, {
     cwd: worktree,
+    env: androidSerial
+      ? { ANDROID_SERIAL: androidSerial }
+      : undefined,
     timeoutMs: config.harnessTimeoutMinutes * 60_000
   });
   await writeFile(transcriptPath, result.stdout + result.stderr);
@@ -573,7 +601,10 @@ export async function sendJobCallback(
         await delay(delayMs);
       }
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10_000);
+      const timeout = setTimeout(
+        () => controller.abort(),
+        config.callbackTimeoutMs
+      );
       try {
         const response = await fetch(job.callbackUrl, {
           body,
