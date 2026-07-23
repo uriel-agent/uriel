@@ -315,7 +315,7 @@ async function runHarness(
   await reporter.event("worker", "info", `Running ${harnessId} headlessly.`);
   const result = await runObservedCommand(evidence, invocation.command, invocation.args, {
     cwd: worktree,
-    timeoutMs: 45 * 60_000
+    timeoutMs: config.harnessTimeoutMinutes * 60_000
   });
   await writeFile(transcriptPath, result.stdout + result.stderr);
   await reporter.uploadArtifact(

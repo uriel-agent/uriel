@@ -10,6 +10,7 @@ export interface WorkerConfig {
   dryRun: boolean;
   enableAndroidQa: boolean;
   enableBrowserQa: boolean;
+  harnessTimeoutMinutes: number;
   harnessAdapter?: string;
   host: string;
   issueTrackerAdapter?: string;
@@ -40,6 +41,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     dryRun: env.URIEL_DRY_RUN === "1" || env.URIEL_DRY_RUN === "true",
     enableAndroidQa: env.URIEL_ENABLE_ANDROID_QA !== "false",
     enableBrowserQa: env.URIEL_ENABLE_BROWSER_QA !== "false",
+    harnessTimeoutMinutes: Math.max(
+      1,
+      Number.parseInt(env.URIEL_HARNESS_TIMEOUT_MINUTES ?? "45", 10) || 45
+    ),
     harnessAdapter: env.URIEL_ADAPTER_HARNESS,
     host: env.URIEL_WORKER_HOST ?? "127.0.0.1",
     issueTrackerAdapter: env.URIEL_ADAPTER_ISSUE_TRACKER,
