@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 
 import type { WorkerConfig } from "./config.ts";
 import type { EvidenceRecorder } from "./evidence.ts";
@@ -32,8 +33,8 @@ export function configuredAndroidProvisioning(
     throw new Error("URIEL_ANDROID_APK_SHA256 must be a lowercase 64-character SHA-256 digest.");
   }
   const url = new URL(config.androidApkUrl!);
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error("URIEL_ANDROID_APK_URL must use http or https.");
+  if (!["file:", "https:", "http:"].includes(url.protocol)) {
+    throw new Error("URIEL_ANDROID_APK_URL must use file, http, or https.");
   }
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u.test(config.androidAppPackage!)) {
     throw new Error("URIEL_ANDROID_APP_PACKAGE is not a valid Android package name.");
@@ -123,6 +124,17 @@ async function downloadAndVerify(
   cacheDir: string,
   reporter: JobReporter
 ): Promise<string> {
+  if (new URL(provisioning.url).protocol === "file:") {
+    const localPath = fileURLToPath(provisioning.url);
+    const actualSha256 = await sha256File(localPath);
+    if (actualSha256 !== provisioning.sha256) {
+      throw new Error(
+        `Android APK checksum mismatch: expected ${provisioning.sha256}, received ${actualSha256}.`
+      );
+    }
+    return localPath;
+  }
+
   await mkdir(cacheDir, { recursive: true });
   const apkPath = join(cacheDir, `${provisioning.sha256}.apk`);
   if (await exists(apkPath) && await sha256File(apkPath) === provisioning.sha256) {

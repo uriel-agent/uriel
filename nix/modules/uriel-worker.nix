@@ -186,7 +186,7 @@ in
           options = {
             url = lib.mkOption {
               type = lib.types.str;
-              description = "HTTPS URL of the Android QA APK.";
+              description = "HTTP(S) or file URL of the Android QA APK.";
             };
             sha256 = lib.mkOption {
               type = lib.types.strMatching "^[a-f0-9]{64}$";

@@ -77,7 +77,8 @@ Useful NixOS module knobs:
   worker if every active job should start immediately.
 - `androidBootTimeoutSeconds`: bounds cold AVD boots (default 300 seconds).
 - `androidApk`: optionally downloads, verifies, caches, and installs a pinned
-  QA APK before the coding harness starts.
+  QA APK before the coding harness starts. Its URL may use `file://` for an
+  operator-managed host-local artifact.
 - `extraPackages`: adds repo-specific tools to the worker service `PATH`.
 
 Deploy the host:
