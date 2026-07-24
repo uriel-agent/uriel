@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 import {
   buildBranchName,
@@ -76,7 +77,7 @@ async function serve(config: WorkerConfig): Promise<void> {
   }
 }
 
-async function handleRequest(
+export async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   config: WorkerConfig
@@ -131,12 +132,15 @@ async function handleRequest(
     const cancelMatch = /^\/jobs\/([^/]+)\/cancel$/u.exec(url.pathname);
     if (request.method === "POST" && cancelMatch?.[1]) {
       const jobId = decodeURIComponent(cancelMatch[1]);
-      const job = await new LocalJobStore(config).setStatus(
-        jobId,
-        "cancelled"
-      );
-      if (!job) {
+      const result = await new LocalJobStore(config).cancelJob(jobId);
+      if (!result) {
         writeJson(response, 404, { error: "Job not found." });
+        return;
+      }
+      if (!result.changed) {
+        writeJson(response, 409, {
+          error: `Cannot cancel job with status "${result.job.status}".`
+        });
         return;
       }
       if (scheduler.jobs?.cancel(jobId)) {
@@ -145,7 +149,7 @@ async function handleRequest(
           createJobEvent("worker", "info", "Removed cancelled job from the scheduler queue.")
         );
       }
-      writeJson(response, 200, job);
+      writeJson(response, 200, result.job);
       return;
     }
 
@@ -320,7 +324,9 @@ function valueAfter(args: string[], flag: string): string | undefined {
   return args[index + 1];
 }
 
-void main(process.argv.slice(2)).catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main(process.argv.slice(2)).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

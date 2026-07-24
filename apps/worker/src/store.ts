@@ -11,6 +11,12 @@ import {
 } from "../../../packages/core/src/index.ts";
 import type { WorkerConfig } from "./config.ts";
 
+const terminalJobStatuses = new Set<JobStatus>([
+  "cancelled",
+  "completed",
+  "failed"
+]);
+
 export class LocalJobStore {
   readonly artifactsDir: string;
   private readonly jobsDir: string;
@@ -90,9 +96,25 @@ export class LocalJobStore {
   }
 
   async setStatus(jobId: string, status: JobStatus): Promise<Job | undefined> {
+    return (await this.transitionStatus(jobId, status))?.job;
+  }
+
+  async cancelJob(
+    jobId: string
+  ): Promise<{ changed: boolean; job: Job } | undefined> {
+    return this.transitionStatus(jobId, "cancelled");
+  }
+
+  private async transitionStatus(
+    jobId: string,
+    status: JobStatus
+  ): Promise<{ changed: boolean; job: Job } | undefined> {
     const job = await this.getJob(jobId);
     if (!job) {
       return undefined;
+    }
+    if (terminalJobStatuses.has(job.status)) {
+      return { changed: false, job };
     }
     const next = { ...job, status, updatedAt: new Date().toISOString() };
     await this.putJob(next);
@@ -100,7 +122,7 @@ export class LocalJobStore {
       jobId,
       createJobEvent("job", "info", `Status changed to ${status}.`)
     );
-    return this.getJob(jobId);
+    return { changed: true, job: (await this.getJob(jobId)) ?? next };
   }
 
   async setCheckResults(
