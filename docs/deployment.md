@@ -12,6 +12,14 @@ QA evidence on the NixOS host.
     enable = true;
     allowedRepos = [ "uriel-agent/uriel" ];
     maxConcurrentJobs = 1;
+    androidAvds = [ "qa-1" ];
+    androidBootTimeoutSeconds = 300;
+    # Optional: install a checksum-pinned app before each Android harness.
+    # androidApk = {
+    #   url = "https://example.invalid/releases/qa.apk";
+    #   sha256 = "<64 lowercase hex characters>";
+    #   packageName = "com.example.qa";
+    # };
     artifactRetentionDays = 14;
     environmentFiles = [
       "/run/secrets/uriel-worker.env"
@@ -60,8 +68,16 @@ Useful NixOS module knobs:
 - `allowedRepos`: restricts the worker to specific GitHub URLs or `owner/repo`
   slugs.
 - `maxConcurrentJobs`: caps local worker concurrency.
+- `callbackTimeoutSeconds`: bounds each completion callback attempt (default
+  60 seconds).
 - `artifactRetentionDays`: enables tmpfiles cleanup for local artifacts.
 - `enableBrowserQa` / `enableAndroidQa`: include or disable QA toolchains.
+- `androidAvds`: provides exclusive per-job Android slots. Set
+  `maxConcurrentJobs` no higher than the number of AVDs for an Android-only
+  worker if every active job should start immediately.
+- `androidBootTimeoutSeconds`: bounds cold AVD boots (default 300 seconds).
+- `androidApk`: optionally downloads, verifies, caches, and installs a pinned
+  QA APK before the coding harness starts.
 - `extraPackages`: adds repo-specific tools to the worker service `PATH`.
 
 Deploy the host:
@@ -100,8 +116,11 @@ ls -l /dev/kvm
 ```
 
 The NixOS module adds the `uriel` user to `kvm`, `video`, `render`, and
-`adbusers`. If no emulator is booted, Android QA is skipped with a diagnostic
-instead of failing the entire job.
+`adbusers`. Configure one AVD name per concurrent Android slot. The worker
+boots the leased AVD, resolves its exact adb serial, and passes that serial to
+the harness; it never relies on adb's ambiguous default-device selection. If
+no AVD pool is configured, Android jobs are serialized against one explicitly
+attached device.
 
 ## 4. Optional Ingress
 

@@ -20,7 +20,8 @@ export async function runQa(
   config: WorkerConfig,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  androidSerial?: string
 ): Promise<string[]> {
   const summaries: string[] = [];
   if (job.qa === "none") {
@@ -33,7 +34,7 @@ export async function runQa(
   }
 
   if (job.qa === "android" || job.qa === "both") {
-    summaries.push(await runAndroidQa(job, config, artifactsDir, reporter, evidence));
+    summaries.push(await runAndroidQa(job, config, artifactsDir, reporter, evidence, androidSerial));
   }
 
   return summaries;
@@ -111,29 +112,43 @@ async function runAndroidQa(
   config: WorkerConfig,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  requestedSerial?: string
 ): Promise<string> {
   if (!config.enableAndroidQa) {
     await reporter.event("qa", "warn", "Skipping Android QA; Android QA is disabled.");
     return "Android QA skipped: disabled by worker config.";
   }
 
-  if (!(await ensureAndroidDevice(config, reporter, evidence))) {
+  const serial = requestedSerial ?? await ensureAndroidDevice(config, reporter, evidence);
+  if (!serial) {
     return "Android QA skipped: no booted adb device is attached.";
   }
 
+  const maestroFlow = typeof job.metadata.maestroFlow === "string"
+    ? job.metadata.maestroFlow
+    : undefined;
+  if (!shouldCaptureGenericAndroidQa(job)) {
+    await reporter.event(
+      "qa",
+      "info",
+      "Checklist verification evidence was captured by the harness; skipping generic Android recording."
+    );
+    return "Android checklist evidence captured by the harness.";
+  }
+
   const recordingName = "android-screenrecord.mp4";
-  await recordAndroidClip(recordingName, 10, artifactsDir, reporter, evidence);
+  await recordAndroidClip(recordingName, 10, artifactsDir, reporter, evidence, serial);
   if (!(await exists(join(artifactsDir, recordingName)))) {
     return "Android QA failed: screenrecord failed.";
   }
 
-  if (typeof job.metadata.maestroFlow === "string" && await commandExists("maestro")) {
-    await reporter.event("qa", "info", `Running Maestro flow ${job.metadata.maestroFlow}.`);
+  if (maestroFlow && await commandExists("maestro")) {
+    await reporter.event("qa", "info", `Running Maestro flow ${maestroFlow}.`);
     const maestro = await runObservedCommand(
       evidence,
       "maestro",
-      ["test", job.metadata.maestroFlow],
+      ["test", maestroFlow],
       { timeoutMs: 180_000 }
     );
     await writeFile(join(artifactsDir, "maestro.log"), maestro.stdout + maestro.stderr);
@@ -144,14 +159,21 @@ async function runAndroidQa(
   return "Android QA completed.";
 }
 
+export function shouldCaptureGenericAndroidQa(
+  job: Pick<Job, "kind" | "metadata">
+): boolean {
+  return job.kind !== "verify" || typeof job.metadata.maestroFlow === "string";
+}
+
 export async function ensureAndroidDevice(
   config: WorkerConfig,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
-): Promise<boolean> {
+  evidence?: EvidenceRecorder,
+  requestedAvd: string | undefined = config.androidAvd
+): Promise<string | undefined> {
   if (!(await commandExists("adb"))) {
     await reporter.event("qa", "warn", "Skipping Android QA; adb is missing.");
-    return false;
+    return undefined;
   }
 
   const canBootEmulator = (await exists("/dev/kvm")) || process.platform === "darwin";
@@ -163,33 +185,45 @@ export async function ensureAndroidDevice(
     );
   }
 
-  let waitForBoot = false;
-  if (canBootEmulator && config.androidAvd && (await commandExists("emulator"))) {
-    await reporter.event("qa", "info", `Ensuring Android AVD ${config.androidAvd} is booted.`);
-    const emulator = await runObservedCommand(
-      evidence,
-      "pgrep",
-      ["-f", `emulator.*${config.androidAvd}`]
-    );
-    if (emulator.code !== 0) {
-      const avd = quote(config.androidAvd);
-      await runObservedCommand(evidence, "sh", [
+  await runObservedCommand(evidence, "adb", ["start-server"], { timeoutMs: 30_000 });
+
+  let serial: string | undefined;
+  if (requestedAvd) {
+    await reporter.event("qa", "info", `Ensuring Android AVD ${requestedAvd} is booted.`);
+    serial = await serialForAvd(requestedAvd, evidence);
+    if (!serial) {
+      if (!canBootEmulator || !(await commandExists("emulator"))) {
+        await reporter.event(
+          "qa",
+          "warn",
+          `Android AVD ${requestedAvd} is not attached and this host cannot boot it.`
+        );
+        return undefined;
+      }
+      const avd = quote(requestedAvd);
+      const launch = await runObservedCommand(evidence, "sh", [
         "-lc",
         `nohup emulator -avd ${avd} -no-snapshot -no-audio -no-window >/tmp/uriel-emulator.log 2>&1 &`
       ]);
+      if (launch.code !== 0) {
+        await reporter.event("qa", "warn", `Failed to start Android AVD ${requestedAvd}.`, {
+          stderr: launch.stderr.slice(-4000)
+        });
+        return undefined;
+      }
     }
-    waitForBoot = true;
-  }
-
-  await runObservedCommand(evidence, "adb", ["start-server"], { timeoutMs: 30_000 });
-  if (waitForBoot) {
-    const deadline = Date.now() + 180_000;
+    const deadline = Date.now() + config.androidBootTimeoutSeconds * 1_000;
     let bootCompleted = false;
     while (Date.now() < deadline) {
+      serial = serial ?? await serialForAvd(requestedAvd, evidence);
+      if (!serial) {
+        await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
+        continue;
+      }
       const boot = await runObservedCommand(
         evidence,
         "adb",
-        ["shell", "getprop", "sys.boot_completed"],
+        ["-s", serial, "shell", "getprop", "sys.boot_completed"],
         { timeoutMs: Math.max(1, Math.min(5_000, deadline - Date.now())) }
       );
       if (boot.code === 0 && boot.stdout.trim() === "1") {
@@ -202,23 +236,48 @@ export async function ensureAndroidDevice(
       await reporter.event(
         "qa",
         "warn",
-        "Skipping Android recording because the emulator did not finish booting within 180 seconds."
+        `Skipping Android recording because AVD ${requestedAvd} did not finish booting within ${config.androidBootTimeoutSeconds} seconds.`
       );
-      return false;
+      return undefined;
+    }
+  } else {
+    const devices = await attachedDeviceSerials(evidence);
+    const inheritedSerial = process.env.ANDROID_SERIAL?.trim();
+    if (inheritedSerial) {
+      if (!devices.includes(inheritedSerial)) {
+        await reporter.event(
+          "qa",
+          "warn",
+          `ANDROID_SERIAL=${inheritedSerial} is not an attached adb device.`
+        );
+        return undefined;
+      }
+      serial = inheritedSerial;
+    } else if (devices.length === 1) {
+      serial = devices[0];
+    } else if (devices.length > 1) {
+      await reporter.event(
+        "qa",
+        "warn",
+        "Skipping Android QA because multiple adb devices are attached and no AVD/ANDROID_SERIAL selected one.",
+        { devices }
+      );
+      return undefined;
     }
   }
 
-  const devices = await runObservedCommand(evidence, "adb", ["devices"], { timeoutMs: 30_000 });
-  if (!/\tdevice/u.test(devices.stdout)) {
+  if (!serial) {
     await reporter.event(
       "qa",
       "warn",
       "Skipping Android recording because no booted adb device is attached.",
-      { devices: devices.stdout }
     );
-    return false;
+    return undefined;
   }
-  return true;
+  await reporter.event("qa", "info", `Android QA bound to ${serial}.`, {
+    ...(requestedAvd ? { avd: requestedAvd } : {})
+  });
+  return serial;
 }
 
 export async function recordAndroidClip(
@@ -226,7 +285,8 @@ export async function recordAndroidClip(
   seconds: number,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  serial?: string
 ): Promise<void> {
   const remotePath = `/sdcard/uriel-${process.pid}-${Date.now()}.mp4`;
   const localPath = join(artifactsDir, name);
@@ -234,7 +294,7 @@ export async function recordAndroidClip(
   const record = await runObservedCommand(
     evidence,
     "adb",
-    ["shell", "screenrecord", "--time-limit", String(seconds), remotePath],
+    [...adbTarget(serial), "shell", "screenrecord", "--time-limit", String(seconds), remotePath],
     { timeoutMs: Math.max(20_000, seconds * 1_000 + 10_000) }
   );
   if (record.code !== 0) {
@@ -243,10 +303,10 @@ export async function recordAndroidClip(
     });
     return;
   }
-  const pull = await runObservedCommand(evidence, "adb", ["pull", remotePath, localPath], {
+  const pull = await runObservedCommand(evidence, "adb", [...adbTarget(serial), "pull", remotePath, localPath], {
     timeoutMs: 30_000
   });
-  await runObservedCommand(evidence, "adb", ["shell", "rm", "-f", remotePath], {
+  await runObservedCommand(evidence, "adb", [...adbTarget(serial), "shell", "rm", "-f", remotePath], {
     timeoutMs: 30_000
   });
   if (pull.code !== 0) {
@@ -257,6 +317,42 @@ export async function recordAndroidClip(
   }
 
   await uploadIfExists(name, localPath, "video/mp4", reporter);
+}
+
+export function parseAdbDeviceSerials(output: string): string[] {
+  return output
+    .split(/\r?\n/u)
+    .map((line) => /^(\S+)\s+device(?:\s|$)/u.exec(line)?.[1])
+    .filter((serial): serial is string => Boolean(serial));
+}
+
+async function attachedDeviceSerials(evidence?: EvidenceRecorder): Promise<string[]> {
+  const result = await runObservedCommand(evidence, "adb", ["devices"], { timeoutMs: 30_000 });
+  return result.code === 0 ? parseAdbDeviceSerials(result.stdout) : [];
+}
+
+async function serialForAvd(
+  requestedAvd: string,
+  evidence?: EvidenceRecorder
+): Promise<string | undefined> {
+  for (const serial of await attachedDeviceSerials(evidence)) {
+    const result = await runObservedCommand(
+      evidence,
+      "adb",
+      ["-s", serial, "emu", "avd", "name"],
+      { timeoutMs: 5_000 }
+    );
+    const avd = result.stdout
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line && line !== "OK");
+    if (result.code === 0 && avd === requestedAvd) return serial;
+  }
+  return undefined;
+}
+
+function adbTarget(serial: string | undefined): string[] {
+  return serial ? ["-s", serial] : [];
 }
 
 async function runObservedCommand(
