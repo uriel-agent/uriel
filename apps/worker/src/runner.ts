@@ -16,9 +16,18 @@ import {
   worktreeSlug
 } from "../../../packages/core/src/index.ts";
 import type { WorkerConfig } from "./config.ts";
+import {
+  configuredAndroidProvisioning,
+  provisionAndroidApp
+} from "./android-provisioning.ts";
 import { EvidenceRecorder } from "./evidence.ts";
 import { ensureLinearIssue } from "./linear.ts";
-import { ensureAndroidDevice, recordAndroidClip, runQa } from "./qa.ts";
+import {
+  ensureAndroidDevice,
+  recordAndroidClip,
+  runQa,
+  shouldCaptureGenericAndroidQa
+} from "./qa.ts";
 import { JobReporter } from "./reporter.ts";
 import {
   commandExists,
@@ -29,7 +38,11 @@ import {
 } from "./shell.ts";
 import { LocalJobStore } from "./store.ts";
 
-export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
+export async function runJob(
+  job: Job,
+  config: WorkerConfig,
+  runtime: { androidAvd?: string } = {}
+): Promise<void> {
   const store = new LocalJobStore(config);
   const reporter = new JobReporter({
     jobId: job.id,
@@ -46,29 +59,46 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     const worktree = await prepareWorktree(job, config, reporter, evidence);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
+    let androidSerial: string | undefined;
     if ((job.qa === "android" || job.qa === "both") && config.enableAndroidQa) {
       try {
-        if (await ensureAndroidDevice(config, reporter, evidence)) {
-          await recordAndroidClip(
-            "before-qa-screenrecord.mp4",
-            10,
-            artifactsDir,
-            reporter,
-            evidence
-          );
-        }
+        androidSerial = await ensureAndroidDevice(config, reporter, evidence, runtime.androidAvd);
       } catch (error) {
         await reporter.event(
           "qa",
           "warn",
-          `Skipping pre-harness Android recording: ${errorMessage(error)}`
+          `Android device preflight failed: ${errorMessage(error)}`
         );
+      }
+      if (!androidSerial && configuredAndroidProvisioning(config)) {
+        throw new Error("Android APK provisioning is configured, but no exclusive Android device is available.");
+      }
+      if (androidSerial) {
+        await provisionAndroidApp(config, androidSerial, reporter, evidence);
+        if (shouldCaptureGenericAndroidQa(job)) {
+          try {
+            await recordAndroidClip(
+              "before-qa-screenrecord.mp4",
+              10,
+              artifactsDir,
+              reporter,
+              evidence,
+              androidSerial
+            );
+          } catch (error) {
+            await reporter.event(
+              "qa",
+              "warn",
+              `Skipping pre-harness Android recording: ${errorMessage(error)}`
+            );
+          }
+        }
       }
     }
     let harnessError: unknown;
     let harnessFailed = false;
     try {
-      await runHarness(job, config, worktree, artifactsDir, reporter, evidence);
+      await runHarness(job, config, worktree, artifactsDir, reporter, evidence, androidSerial);
     } catch (error) {
       harnessError = error;
       harnessFailed = true;
@@ -80,7 +110,7 @@ export async function runJob(job: Job, config: WorkerConfig): Promise<void> {
     if (harnessFailed) {
       throw harnessError;
     }
-    const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence);
+    const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence, androidSerial);
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
     }
@@ -281,7 +311,8 @@ async function runHarness(
   worktree: string,
   artifactsDir: string,
   reporter: JobReporter,
-  evidence: EvidenceRecorder
+  evidence: EvidenceRecorder,
+  androidSerial?: string
 ): Promise<void> {
   const harnessId = metadataString(job, "harness") ?? config.harnessAdapter ?? "opencode";
   if (!isHarnessId(harnessId)) {
@@ -316,6 +347,7 @@ async function runHarness(
   await reporter.event("worker", "info", `Running ${harnessId} headlessly.`);
   const result = await runObservedCommand(evidence, invocation.command, invocation.args, {
     cwd: worktree,
+    ...(androidSerial ? { env: { ANDROID_SERIAL: androidSerial } } : {}),
     timeoutMs: config.harnessTimeoutMinutes * 60_000
   });
   await writeFile(transcriptPath, result.stdout + result.stderr);
@@ -584,7 +616,10 @@ export async function sendJobCallback(
         await delay(delayMs);
       }
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10_000);
+      const timeout = setTimeout(
+        () => controller.abort(),
+        config.callbackTimeoutSeconds * 1_000
+      );
       try {
         const response = await fetch(job.callbackUrl, {
           body,

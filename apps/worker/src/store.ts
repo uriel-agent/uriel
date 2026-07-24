@@ -52,6 +52,29 @@ export class LocalJobStore {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  async failRunningJobsAfterRestart(): Promise<Job[]> {
+    const running = (await this.listJobs()).filter((job) => job.status === "running");
+    const failed = await Promise.all(
+      running.map(async (job) => {
+        const next: Job = {
+          ...job,
+          events: [
+            ...job.events,
+            createJobEvent(
+              "worker",
+              "error",
+              "Worker restarted while this job was running; marking it failed."
+            )
+          ].slice(-500),
+          status: "failed",
+          updatedAt: new Date().toISOString()
+        };
+        return this.putJob(next);
+      })
+    );
+    return failed;
+  }
+
   async appendEvent(jobId: string, event: JobEvent): Promise<Job | undefined> {
     const job = await this.getJob(jobId);
     if (!job) {

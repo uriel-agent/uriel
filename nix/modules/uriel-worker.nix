@@ -120,6 +120,12 @@ in
       description = "Maximum number of jobs the local worker may run at once.";
     };
 
+    callbackTimeoutSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 60;
+      description = "Timeout in seconds for each signed completion callback attempt.";
+    };
+
     artifactRetentionDays = lib.mkOption {
       type = lib.types.nullOr lib.types.ints.positive;
       default = null;
@@ -155,7 +161,49 @@ in
     androidAvd = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Optional Android AVD name to boot before Android QA.";
+      description = "Deprecated single Android AVD name; use androidAvds for concurrent QA.";
+    };
+
+    androidAvds = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Android AVD names used as exclusive per-job slots. When empty, the
+        worker permits one Android job at a time against an explicitly attached
+        device. androidAvd remains a backwards-compatible single-slot fallback.
+      '';
+    };
+
+    androidBootTimeoutSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "Maximum time to wait for a cold Android AVD boot.";
+    };
+
+    androidApk = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.submodule {
+          options = {
+            url = lib.mkOption {
+              type = lib.types.str;
+              description = "HTTPS URL of the Android QA APK.";
+            };
+            sha256 = lib.mkOption {
+              type = lib.types.strMatching "^[a-f0-9]{64}$";
+              description = "Pinned SHA-256 digest of the APK.";
+            };
+            packageName = lib.mkOption {
+              type = lib.types.str;
+              description = "Android application package expected after installation.";
+            };
+          };
+        }
+      );
+      default = null;
+      description = ''
+        Optional checksum-pinned APK provisioned on each Android slot before
+        the coding harness starts.
+      '';
     };
 
     enableAndroidQa = lib.mkOption {
@@ -222,9 +270,11 @@ in
       wantedBy = [ "multi-user.target" ];
       path = runtimePath;
       environment = {
+        URIEL_ANDROID_BOOT_TIMEOUT_SECONDS = toString cfg.androidBootTimeoutSeconds;
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;
+        URIEL_CALLBACK_TIMEOUT_SECONDS = toString cfg.callbackTimeoutSeconds;
         URIEL_STATE_DIR = toString cfg.stateDir;
         URIEL_WORKER_HOST = cfg.host;
         URIEL_WORKER_PORT = toString cfg.port;
@@ -241,6 +291,14 @@ in
       }
       // lib.optionalAttrs (cfg.androidAvd != null) {
         URIEL_ANDROID_AVD = cfg.androidAvd;
+      }
+      // lib.optionalAttrs (cfg.androidAvds != [ ]) {
+        URIEL_ANDROID_AVDS = lib.concatStringsSep "," cfg.androidAvds;
+      }
+      // lib.optionalAttrs (cfg.androidApk != null) {
+        URIEL_ANDROID_APK_URL = cfg.androidApk.url;
+        URIEL_ANDROID_APK_SHA256 = cfg.androidApk.sha256;
+        URIEL_ANDROID_APP_PACKAGE = cfg.androidApk.packageName;
       }
       // cfg.extraEnvironment;
       serviceConfig = {

@@ -143,10 +143,11 @@ time. The payload has this shape:
 }
 ```
 
-The worker makes three attempts. Each attempt has a 10-second timeout; retries
-wait 5 seconds and then 30 seconds. Callback failures are recorded as worker
-events and never change the job outcome. Without `URIEL_CALLBACK_SECRET`, the
-worker emits one warning and sends the callback without a signature.
+The worker makes three attempts. Each attempt uses
+`URIEL_CALLBACK_TIMEOUT_SECONDS` (60 seconds by default); retries wait 5 seconds
+and then 30 seconds. Callback failures are recorded as worker events and never
+change the job outcome. Without `URIEL_CALLBACK_SECRET`, the worker emits one
+warning and sends the callback without a signature.
 
 ## NixOS Worker
 
@@ -188,6 +189,7 @@ Common variables:
 
 - `URIEL_WORKER_TOKEN`
 - `URIEL_CALLBACK_SECRET`
+- `URIEL_CALLBACK_TIMEOUT_SECONDS`
 - `URIEL_ALLOWED_REPOS`
 - `GH_TOKEN`
 - `OPENCODE_MODEL`
@@ -201,6 +203,18 @@ Common variables:
 - `URIEL_ADAPTER_REPO_BOOTSTRAP`
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
+- `URIEL_ANDROID_AVDS`
+- `URIEL_ANDROID_BOOT_TIMEOUT_SECONDS`
+- `URIEL_ANDROID_APK_URL`
+- `URIEL_ANDROID_APK_SHA256`
+- `URIEL_ANDROID_APP_PACKAGE`
+
+For safe concurrent Android QA, configure `URIEL_ANDROID_AVDS` with one AVD
+per slot. Uriel leases each AVD exclusively for a whole job and exports its
+resolved serial as `ANDROID_SERIAL` to the harness. The three APK variables
+form an optional all-or-nothing provisioner: Uriel downloads the pinned APK
+once, verifies its SHA-256, and ensures the configured package is installed on
+the leased device before the harness starts.
 
 The `claude-code` harness authenticates through the environment file: set
 `ANTHROPIC_API_KEY`, or a long-lived subscription token minted with

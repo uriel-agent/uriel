@@ -1,9 +1,15 @@
 export interface WorkerConfig {
   androidAvd?: string;
+  androidAvds: string[];
+  androidApkUrl?: string;
+  androidApkSha256?: string;
+  androidAppPackage?: string;
+  androidBootTimeoutSeconds: number;
   artifactsDir: string;
   allowedRepos: string[];
   browserUrl?: string;
   callbackSecret?: string;
+  callbackTimeoutSeconds: number;
   claudeModel?: string;
   codexEffort?: string;
   codexModel?: string;
@@ -29,12 +35,28 @@ export interface WorkerConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const stateDir = env.URIEL_STATE_DIR ?? "/var/lib/uriel";
+  const androidAvds = parseCsv(env.URIEL_ANDROID_AVDS);
+  if (androidAvds.length === 0 && env.URIEL_ANDROID_AVD?.trim()) {
+    androidAvds.push(env.URIEL_ANDROID_AVD.trim());
+  }
   return {
-    androidAvd: env.URIEL_ANDROID_AVD,
+    androidAvd: androidAvds[0],
+    androidAvds,
+    androidApkUrl: env.URIEL_ANDROID_APK_URL?.trim() || undefined,
+    androidApkSha256: env.URIEL_ANDROID_APK_SHA256?.trim().toLowerCase() || undefined,
+    androidAppPackage: env.URIEL_ANDROID_APP_PACKAGE?.trim() || undefined,
+    androidBootTimeoutSeconds: Math.max(
+      1,
+      Number.parseInt(env.URIEL_ANDROID_BOOT_TIMEOUT_SECONDS ?? "300", 10) || 300
+    ),
     allowedRepos: parseCsv(env.URIEL_ALLOWED_REPOS),
     artifactsDir: env.URIEL_ARTIFACTS_DIR ?? `${stateDir}/artifacts`,
     browserUrl: env.URIEL_BROWSER_URL,
     callbackSecret: env.URIEL_CALLBACK_SECRET,
+    callbackTimeoutSeconds: Math.max(
+      1,
+      Number.parseInt(env.URIEL_CALLBACK_TIMEOUT_SECONDS ?? "60", 10) || 60
+    ),
     claudeModel: env.URIEL_CLAUDE_MODEL,
     codexEffort: env.URIEL_CODEX_EFFORT,
     codexModel: env.URIEL_CODEX_MODEL,

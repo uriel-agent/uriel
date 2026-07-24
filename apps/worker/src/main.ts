@@ -12,16 +12,16 @@ import {
   validateCreateJobRequest
 } from "../../../packages/core/src/index.ts";
 import { loadConfig, type WorkerConfig } from "./config.ts";
-import { runJob } from "./runner.ts";
+import { AndroidSlotPool } from "./android-slots.ts";
+import { JobScheduler } from "./job-scheduler.ts";
+import { JobReporter } from "./reporter.ts";
+import { runJob, sendJobCallback } from "./runner.ts";
 import { LocalJobStore } from "./store.ts";
 
 const scheduler: {
-  active: number;
-  pending: Array<() => Promise<void>>;
-} = {
-  active: 0,
-  pending: []
-};
+  androidSlots?: AndroidSlotPool;
+  jobs?: JobScheduler;
+} = {};
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -48,7 +48,13 @@ async function main(argv: string[]): Promise<void> {
 }
 
 async function serve(config: WorkerConfig): Promise<void> {
-  await new LocalJobStore(config).init();
+  const store = new LocalJobStore(config);
+  await store.init();
+  const strandedJobs = await store.failRunningJobsAfterRestart();
+  scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
+  scheduler.jobs = new JobScheduler(config.maxConcurrentJobs, (error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  });
   const server = createServer((request, response) => {
     void handleRequest(request, response, config);
   });
@@ -56,6 +62,18 @@ async function serve(config: WorkerConfig): Promise<void> {
     server.listen(config.port, config.host, resolve);
   });
   console.log(`uriel-worker listening on http://${config.host}:${config.port}`);
+  for (const job of (await store.listJobs()).filter((candidate) => candidate.status === "queued")) {
+    enqueueJob(job, config);
+  }
+  for (const job of strandedJobs) {
+    const reporter = new JobReporter({ jobId: job.id, store });
+    void sendJobCallback(
+      job,
+      config,
+      reporter,
+      "Worker restarted while the job was running; job marked failed."
+    );
+  }
 }
 
 async function handleRequest(
@@ -112,13 +130,20 @@ async function handleRequest(
 
     const cancelMatch = /^\/jobs\/([^/]+)\/cancel$/u.exec(url.pathname);
     if (request.method === "POST" && cancelMatch?.[1]) {
+      const jobId = decodeURIComponent(cancelMatch[1]);
       const job = await new LocalJobStore(config).setStatus(
-        decodeURIComponent(cancelMatch[1]),
+        jobId,
         "cancelled"
       );
       if (!job) {
         writeJson(response, 404, { error: "Job not found." });
         return;
+      }
+      if (scheduler.jobs?.cancel(jobId)) {
+        await new LocalJobStore(config).appendEvent(
+          jobId,
+          createJobEvent("worker", "info", "Removed cancelled job from the scheduler queue.")
+        );
       }
       writeJson(response, 200, job);
       return;
@@ -184,26 +209,19 @@ async function handleRequest(
 }
 
 function enqueueJob(job: Job, config: WorkerConfig): void {
-  scheduler.pending.push(() => runJob(job, config));
-  drainQueue(config.maxConcurrentJobs);
-}
-
-function drainQueue(maxConcurrentJobs: number): void {
-  while (scheduler.active < maxConcurrentJobs && scheduler.pending.length > 0) {
-    const run = scheduler.pending.shift();
-    if (!run) {
-      return;
+  scheduler.jobs?.enqueue(job.id, async () => {
+    const current = await new LocalJobStore(config).getJob(job.id);
+    if (current?.status !== "queued") return;
+    const needsAndroid = config.enableAndroidQa && (job.qa === "android" || job.qa === "both");
+    const lease = needsAndroid ? await scheduler.androidSlots?.acquire() : undefined;
+    try {
+      const leasedJob = await new LocalJobStore(config).getJob(job.id);
+      if (leasedJob?.status !== "queued") return;
+      await runJob(job, config, { androidAvd: lease?.avd });
+    } finally {
+      lease?.release();
     }
-    scheduler.active += 1;
-    void run()
-      .catch((error) => {
-        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-      })
-      .finally(() => {
-        scheduler.active -= 1;
-        drainQueue(maxConcurrentJobs);
-      });
-  }
+  });
 }
 
 function createJob(request: CreateJobRequest): Job {
