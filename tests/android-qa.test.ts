@@ -55,7 +55,7 @@ describe("Android QA preflight", () => {
     });
   });
 
-  it("rejects partial, unpinned, or non-http APK configuration", () => {
+  it("rejects partial, unpinned, or unsupported APK configuration", () => {
     expect(() =>
       configuredAndroidProvisioning({
         androidApkUrl: "https://example.test/qa.apk"
@@ -71,10 +71,24 @@ describe("Android QA preflight", () => {
     expect(() =>
       configuredAndroidProvisioning({
         androidApkSha256: "a".repeat(64),
-        androidApkUrl: "file:///tmp/qa.apk",
+        androidApkUrl: "ftp://example.test/qa.apk",
         androidAppPackage: "com.example.qa"
       })
-    ).toThrow("http or https");
+    ).toThrow("file, http, or https");
+  });
+
+  it("accepts a host-local checksum-pinned APK", () => {
+    expect(
+      configuredAndroidProvisioning({
+        androidApkSha256: "a".repeat(64),
+        androidApkUrl: "file:///var/lib/uriel/qa.apk",
+        androidAppPackage: "com.example.qa"
+      })
+    ).toEqual({
+      packageName: "com.example.qa",
+      sha256: "a".repeat(64),
+      url: "file:///var/lib/uriel/qa.apk"
+    });
   });
 
   it("downloads, verifies, installs, and then reuses a pinned APK", async () => {

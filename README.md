@@ -214,7 +214,9 @@ per slot. Uriel leases each AVD exclusively for a whole job and exports its
 resolved serial as `ANDROID_SERIAL` to the harness. The three APK variables
 form an optional all-or-nothing provisioner: Uriel downloads the pinned APK
 once, verifies its SHA-256, and ensures the configured package is installed on
-the leased device before the harness starts.
+the leased device before the harness starts. `URIEL_ANDROID_APK_URL` may also
+be a `file://` URL when an operator maintains the signed APK on the worker
+host; the checksum is still verified before every install.
 
 The `claude-code` harness authenticates through the environment file: set
 `ANTHROPIC_API_KEY`, or a long-lived subscription token minted with
