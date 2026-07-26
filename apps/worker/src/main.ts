@@ -14,6 +14,7 @@ import {
 } from "../../../packages/core/src/index.ts";
 import { loadConfig, type WorkerConfig } from "./config.ts";
 import { AndroidSlotPool } from "./android-slots.ts";
+import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
 import { JobScheduler } from "./job-scheduler.ts";
 import { JobReporter } from "./reporter.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
@@ -21,6 +22,7 @@ import { LocalJobStore } from "./store.ts";
 
 const scheduler: {
   androidSlots?: AndroidSlotPool;
+  iosSimulatorSlots?: IosSimulatorSlotPool;
   jobs?: JobScheduler;
 } = {};
 
@@ -53,6 +55,7 @@ async function serve(config: WorkerConfig): Promise<void> {
   await store.init();
   const strandedJobs = await store.failRunningJobsAfterRestart();
   scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
+  scheduler.iosSimulatorSlots = new IosSimulatorSlotPool(config.iosSimulatorUdids);
   scheduler.jobs = new JobScheduler(config.maxConcurrentJobs, (error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   });
@@ -216,14 +219,24 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
   scheduler.jobs?.enqueue(job.id, async () => {
     const current = await new LocalJobStore(config).getJob(job.id);
     if (current?.status !== "queued") return;
-    const needsAndroid = config.enableAndroidQa && (job.qa === "android" || job.qa === "both");
-    const lease = needsAndroid ? await scheduler.androidSlots?.acquire() : undefined;
+    const needsAndroid =
+      config.enableAndroidQa &&
+      (job.qa === "android" || job.qa === "both" || job.qa === "all");
+    const needsIos = config.enableIosQa && (job.qa === "ios" || job.qa === "all");
+    const androidLease = needsAndroid ? await scheduler.androidSlots?.acquire() : undefined;
+    const iosSimulatorLease = needsIos
+      ? await scheduler.iosSimulatorSlots?.acquire()
+      : undefined;
     try {
       const leasedJob = await new LocalJobStore(config).getJob(job.id);
       if (leasedJob?.status !== "queued") return;
-      await runJob(job, config, { androidAvd: lease?.avd });
+      await runJob(job, config, {
+        androidAvd: androidLease?.avd,
+        iosSimulatorUdid: iosSimulatorLease?.udid
+      });
     } finally {
-      lease?.release();
+      androidLease?.release();
+      iosSimulatorLease?.release();
     }
   });
 }

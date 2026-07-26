@@ -24,7 +24,7 @@ For every job, the worker:
 6. Runs profile adapter setup such as `direnv allow`.
 7. Runs the selected harness, OpenCode by default, or Claude Code or Codex when
    configured.
-8. Runs requested browser and/or Android QA.
+8. Runs requested browser, Android, and/or iOS QA.
 9. Commits changes, pushes the branch, and creates a draft PR with `gh`.
 10. Writes `evidence.json` with the repo contract, commands, QA summaries,
     artifacts, and PR URL.

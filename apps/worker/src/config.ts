@@ -16,6 +16,7 @@ export interface WorkerConfig {
   dryRun: boolean;
   enableAndroidQa: boolean;
   enableBrowserQa: boolean;
+  enableIosQa: boolean;
   harnessTimeoutMinutes: number;
   harnessAdapter?: string;
   host: string;
@@ -23,6 +24,10 @@ export interface WorkerConfig {
   issueTrackerApiKey?: string;
   issueTrackerInProgressState?: string;
   issueTrackerTeamKey?: string;
+  iosBootTimeoutSeconds: number;
+  iosSimulatorName?: string;
+  iosSimulatorUdid?: string;
+  iosSimulatorUdids: string[];
   opencodeModel?: string;
   maxConcurrentJobs: number;
   port: number;
@@ -38,6 +43,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const androidAvds = parseCsv(env.URIEL_ANDROID_AVDS);
   if (androidAvds.length === 0 && env.URIEL_ANDROID_AVD?.trim()) {
     androidAvds.push(env.URIEL_ANDROID_AVD.trim());
+  }
+  const iosSimulatorUdids = parseCsv(env.URIEL_IOS_SIMULATOR_UDIDS);
+  if (iosSimulatorUdids.length === 0 && env.URIEL_IOS_SIMULATOR_UDID?.trim()) {
+    iosSimulatorUdids.push(env.URIEL_IOS_SIMULATOR_UDID.trim());
   }
   return {
     androidAvd: androidAvds[0],
@@ -63,6 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     dryRun: env.URIEL_DRY_RUN === "1" || env.URIEL_DRY_RUN === "true",
     enableAndroidQa: env.URIEL_ENABLE_ANDROID_QA !== "false",
     enableBrowserQa: env.URIEL_ENABLE_BROWSER_QA !== "false",
+    enableIosQa: env.URIEL_ENABLE_IOS_QA !== "false",
     harnessTimeoutMinutes: Math.max(
       1,
       Number.parseInt(env.URIEL_HARNESS_TIMEOUT_MINUTES ?? "45", 10) || 45
@@ -73,6 +83,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     issueTrackerApiKey: env.URIEL_ADAPTER_ISSUE_TRACKER_API_KEY,
     issueTrackerInProgressState: env.URIEL_ADAPTER_ISSUE_TRACKER_IN_PROGRESS_STATE,
     issueTrackerTeamKey: env.URIEL_ADAPTER_ISSUE_TRACKER_TEAM_KEY,
+    iosBootTimeoutSeconds: Math.max(
+      1,
+      Number.parseInt(env.URIEL_IOS_BOOT_TIMEOUT_SECONDS ?? "300", 10) || 300
+    ),
+    iosSimulatorName: env.URIEL_IOS_SIMULATOR_NAME?.trim() || undefined,
+    iosSimulatorUdid: iosSimulatorUdids[0],
+    iosSimulatorUdids,
     maxConcurrentJobs: Math.max(1, Number.parseInt(env.URIEL_MAX_CONCURRENT_JOBS ?? "1", 10) || 1),
     opencodeModel: env.OPENCODE_MODEL,
     port: Number.parseInt(env.URIEL_WORKER_PORT ?? "8788", 10),

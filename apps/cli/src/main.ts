@@ -91,7 +91,7 @@ async function main(argv: string[]): Promise<void> {
   }
 
   console.log(`Usage:
-  urielctl submit --repo <github-url> --prompt <text> [--kind change|verify] [--ref <ref>] [--checks-file <path>] [--callback-url <url>] [--issue ISSUE-123] [--profile <id>] [--harness opencode|claude-code|codex] [--issue-tracker <adapter>] [--repo-bootstrap <adapter>] [--qa browser|android|both]
+  urielctl submit --repo <github-url> --prompt <text> [--kind change|verify] [--ref <ref>] [--checks-file <path>] [--callback-url <url>] [--issue ISSUE-123] [--profile <id>] [--harness opencode|claude-code|codex] [--issue-tracker <adapter>] [--repo-bootstrap <adapter>] [--qa none|browser|android|ios|both|all]
   urielctl status <job-id>
   urielctl approve <job-id> <step-id>
   urielctl cancel <job-id>
