@@ -1,4 +1,5 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -21,7 +22,8 @@ export async function runQa(
   artifactsDir: string,
   reporter: JobReporter,
   evidence?: EvidenceRecorder,
-  androidSerial?: string
+  androidSerial?: string,
+  iosSimulatorUdid?: string
 ): Promise<string[]> {
   const summaries: string[] = [];
   if (job.qa === "none") {
@@ -29,12 +31,18 @@ export async function runQa(
     return ["QA not requested."];
   }
 
-  if (job.qa === "browser" || job.qa === "both") {
+  if (job.qa === "browser" || job.qa === "both" || job.qa === "all") {
     summaries.push(await runBrowserQa(config, artifactsDir, reporter, evidence));
   }
 
-  if (job.qa === "android" || job.qa === "both") {
+  if (job.qa === "android" || job.qa === "both" || job.qa === "all") {
     summaries.push(await runAndroidQa(job, config, artifactsDir, reporter, evidence, androidSerial));
+  }
+
+  if (job.qa === "ios" || job.qa === "all") {
+    summaries.push(
+      await runIosQa(job, config, artifactsDir, reporter, evidence, iosSimulatorUdid)
+    );
   }
 
   return summaries;
@@ -159,6 +167,66 @@ async function runAndroidQa(
   return "Android QA completed.";
 }
 
+export async function runIosQa(
+  job: Job,
+  config: WorkerConfig,
+  artifactsDir: string,
+  reporter: JobReporter,
+  evidence?: EvidenceRecorder,
+  requestedUdid?: string
+): Promise<string> {
+  if (!config.enableIosQa) {
+    await reporter.event("qa", "warn", "Skipping iOS QA; iOS QA is disabled.");
+    return "iOS QA skipped: disabled by worker config.";
+  }
+
+  const udid = await ensureIosSimulator(config, reporter, evidence, requestedUdid);
+  if (!udid) {
+    return "iOS QA skipped: no booted simulator is available.";
+  }
+
+  const recordingName = "ios-screenrecord.mp4";
+  await recordIosClip(recordingName, 10, artifactsDir, reporter, evidence, udid);
+  if (!(await exists(join(artifactsDir, recordingName)))) {
+    return "iOS QA failed: screen recording failed.";
+  }
+
+  const maestroFlow = typeof job.metadata.maestroFlow === "string"
+    ? job.metadata.maestroFlow
+    : undefined;
+  if (maestroFlow && await commandExists("maestro")) {
+    await reporter.event("qa", "info", `Running Maestro flow ${maestroFlow} on iOS.`);
+    const maestro = await runObservedCommand(
+      evidence,
+      "maestro",
+      ["test", maestroFlow, "--udid", udid],
+      { timeoutMs: 180_000 }
+    );
+    const maestroLogPath = join(artifactsDir, "ios-maestro.log");
+    await writeFile(maestroLogPath, maestro.stdout + maestro.stderr);
+    await uploadIfExists("ios-maestro.log", maestroLogPath, "text/plain", reporter);
+  }
+
+  const screenshotName = "ios-screenshot.png";
+  const screenshotPath = join(artifactsDir, screenshotName);
+  const screenshot = await runObservedCommand(
+    evidence,
+    "xcrun",
+    ["simctl", "io", udid, "screenshot", screenshotPath],
+    { timeoutMs: 30_000 }
+  );
+  if (screenshot.code !== 0) {
+    await reporter.event("qa", "error", "iOS screenshot failed.", {
+      stderr: screenshot.stderr.slice(-4000)
+    });
+  } else {
+    await uploadIfExists(screenshotName, screenshotPath, "image/png", reporter);
+  }
+
+  await reporter.event("qa", "info", "iOS QA completed.");
+  return "iOS QA completed.";
+}
+
 export function shouldCaptureGenericAndroidQa(
   job: Pick<Job, "kind" | "metadata">
 ): boolean {
@@ -280,6 +348,75 @@ export async function ensureAndroidDevice(
   return serial;
 }
 
+export async function ensureIosSimulator(
+  config: WorkerConfig,
+  reporter: JobReporter,
+  evidence?: EvidenceRecorder,
+  requestedUdid: string | undefined = config.iosSimulatorUdid
+): Promise<string | undefined> {
+  if (!(await commandExists("xcrun"))) {
+    await reporter.event("qa", "warn", "Skipping iOS QA; xcrun is missing.");
+    return undefined;
+  }
+
+  const requestedName = requestedUdid ? undefined : config.iosSimulatorName;
+  let booted = await bootedSimulators(evidence);
+  const alreadyBooted = selectBootedSimulator(booted, requestedUdid, requestedName);
+  if (alreadyBooted) {
+    await reportIosSimulatorBinding(alreadyBooted, reporter);
+    return alreadyBooted.udid;
+  }
+
+  const bootTarget = requestedUdid ?? requestedName;
+  if (!bootTarget) {
+    if (booted.length === 1 && booted[0]) {
+      await reportIosSimulatorBinding(booted[0], reporter);
+      return booted[0].udid;
+    }
+    await reporter.event(
+      "qa",
+      "warn",
+      booted.length > 1
+        ? "Skipping iOS QA because multiple simulators are booted and no simulator UDID or name selected one."
+        : "Skipping iOS QA because no simulator is booted and no simulator UDID or name is configured.",
+      booted.length > 1 ? { devices: booted.map((simulator) => simulator.udid) } : undefined
+    );
+    return undefined;
+  }
+
+  await reporter.event("qa", "info", `Booting iOS Simulator ${bootTarget}.`);
+  const boot = await runObservedCommand(
+    evidence,
+    "xcrun",
+    ["simctl", "boot", bootTarget],
+    { timeoutMs: 30_000 }
+  );
+  if (boot.code !== 0) {
+    await reporter.event("qa", "warn", `Failed to boot iOS Simulator ${bootTarget}.`, {
+      stderr: boot.stderr.slice(-4000)
+    });
+    return undefined;
+  }
+
+  const deadline = Date.now() + config.iosBootTimeoutSeconds * 1_000;
+  while (Date.now() < deadline) {
+    booted = await bootedSimulators(evidence);
+    const simulator = selectBootedSimulator(booted, requestedUdid, requestedName);
+    if (simulator) {
+      await reportIosSimulatorBinding(simulator, reporter);
+      return simulator.udid;
+    }
+    await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
+  }
+
+  await reporter.event(
+    "qa",
+    "warn",
+    `Skipping iOS QA because Simulator ${bootTarget} did not finish booting within ${config.iosBootTimeoutSeconds} seconds.`
+  );
+  return undefined;
+}
+
 export async function recordAndroidClip(
   name: string,
   seconds: number,
@@ -319,6 +456,43 @@ export async function recordAndroidClip(
   await uploadIfExists(name, localPath, "video/mp4", reporter);
 }
 
+/**
+ * Records the simulator screen for `seconds`, then stops.
+ *
+ * Unlike `adb shell screenrecord --time-limit`, `simctl io recordVideo` runs until it is
+ * signalled, and it must be stopped with SIGINT — SIGTERM/SIGKILL leave the container unfinalised
+ * and the file unplayable.
+ *
+ * Expect the resulting clip to be much SHORTER than `seconds`: simctl encodes a frame only when
+ * the display changes, so an idle simulator yields a fraction of a second no matter how long the
+ * recording ran. Measured on a booted iPhone simulator: a 4-second capture of a static screen
+ * produced 0.07s of video, while the same capture with the UI actually changing produced 0.94s.
+ * A short clip is therefore not evidence that the timing or the signalling is broken.
+ */
+export async function recordIosClip(
+  name: string,
+  seconds: number,
+  artifactsDir: string,
+  reporter: JobReporter,
+  evidence: EvidenceRecorder | undefined,
+  udid: string
+): Promise<void> {
+  const localPath = join(artifactsDir, name);
+  const args = ["simctl", "io", udid, "recordVideo", localPath];
+  await reporter.event("qa", "info", `Recording iOS Simulator screen for ${seconds} seconds.`);
+  const record = await runCommandUntilInterrupt("xcrun", args, seconds * 1_000);
+  evidence?.recordCommand("xcrun", args, record);
+  if (record.code !== 0) {
+    await rm(localPath, { force: true });
+    await reporter.event("qa", "error", "iOS Simulator recording failed.", {
+      stderr: record.stderr.slice(-4000)
+    });
+    return;
+  }
+
+  await uploadIfExists(name, localPath, "video/mp4", reporter);
+}
+
 export function parseAdbDeviceSerials(output: string): string[] {
   return output
     .split(/\r?\n/u)
@@ -326,9 +500,79 @@ export function parseAdbDeviceSerials(output: string): string[] {
     .filter((serial): serial is string => Boolean(serial));
 }
 
+export function parseBootedSimulatorUdids(output: string): string[] {
+  return parseBootedSimulators(output).map((simulator) => simulator.udid);
+}
+
 async function attachedDeviceSerials(evidence?: EvidenceRecorder): Promise<string[]> {
   const result = await runObservedCommand(evidence, "adb", ["devices"], { timeoutMs: 30_000 });
   return result.code === 0 ? parseAdbDeviceSerials(result.stdout) : [];
+}
+
+interface BootedSimulator {
+  name: string;
+  udid: string;
+}
+
+function parseBootedSimulators(output: string): BootedSimulator[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output) as unknown;
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.devices)) {
+    return [];
+  }
+
+  const simulators: BootedSimulator[] = [];
+  for (const devices of Object.values(parsed.devices)) {
+    if (!Array.isArray(devices)) continue;
+    for (const device of devices) {
+      if (
+        isRecord(device) &&
+        device.state === "Booted" &&
+        typeof device.udid === "string" &&
+        typeof device.name === "string"
+      ) {
+        simulators.push({ name: device.name, udid: device.udid });
+      }
+    }
+  }
+  return simulators;
+}
+
+async function bootedSimulators(evidence?: EvidenceRecorder): Promise<BootedSimulator[]> {
+  const result = await runObservedCommand(
+    evidence,
+    "xcrun",
+    ["simctl", "list", "devices", "booted", "-j"],
+    { timeoutMs: 30_000 }
+  );
+  return result.code === 0 ? parseBootedSimulators(result.stdout) : [];
+}
+
+function selectBootedSimulator(
+  simulators: BootedSimulator[],
+  requestedUdid?: string,
+  requestedName?: string
+): BootedSimulator | undefined {
+  if (requestedUdid) {
+    return simulators.find((simulator) => simulator.udid === requestedUdid);
+  }
+  if (requestedName) {
+    return simulators.find((simulator) => simulator.name === requestedName);
+  }
+  return undefined;
+}
+
+async function reportIosSimulatorBinding(
+  simulator: BootedSimulator,
+  reporter: JobReporter
+): Promise<void> {
+  await reporter.event("qa", "info", `iOS QA bound to ${simulator.udid}.`, {
+    name: simulator.name
+  });
 }
 
 async function serialForAvd(
@@ -366,6 +610,61 @@ async function runObservedCommand(
   return result;
 }
 
+async function runCommandUntilInterrupt(
+  command: string,
+  args: string[],
+  interruptAfterMs: number
+): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const child = spawn(command, args, {
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let interrupted = false;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const interrupt = setTimeout(() => {
+      interrupted = child.kill("SIGINT");
+      if (interrupted) {
+        forceKill = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      }
+    }, interruptAfterMs);
+
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(interrupt);
+      if (forceKill) clearTimeout(forceKill);
+      resolve({
+        code,
+        durationMs: Date.now() - startedAt,
+        stderr,
+        stdout
+      });
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      stderr += error.message;
+      if (child.pid) child.kill("SIGKILL");
+      finish(1);
+    });
+    child.on("close", (code, signal) => {
+      finish(code ?? (interrupted && signal === "SIGINT" ? 0 : 1));
+    });
+  });
+}
+
 async function uploadIfExists(
   name: string,
   path: string,
@@ -381,4 +680,8 @@ async function uploadIfExists(
   } catch {
     return;
   }
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
 }

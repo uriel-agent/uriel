@@ -7,7 +7,7 @@ for how a project builds, tests, and runs.
 
 The point is simple: remote coding agents should understand Nix. Uriel supplies
 a reproducible NixOS host, fresh Git worktrees, Nix/direnv-aware command
-execution, Android/browser QA capture, local artifacts, and PR creation.
+execution, browser/Android/iOS QA capture, local artifacts, and PR creation.
 Each job also emits an `evidence.json` manifest for command results, discovered
 repo contract data, QA summaries, artifacts, and PR links.
 
@@ -74,6 +74,10 @@ nix run .#urielctl -- submit \
   --repo-bootstrap direnv \
   --qa both
 ```
+
+The `--qa` flag accepts `none`, `browser`, `android`, `ios`, `both`, or `all`.
+`both` retains its browser-and-Android meaning; use `all` to run browser,
+Android, and iOS QA.
 
 Submit a checklist verification job against an exact ref:
 
@@ -157,6 +161,12 @@ available (`/dev/kvm` on Linux, or macOS); otherwise Android QA runs against
 an already-attached device and is skipped with a diagnostic when none is
 attached.
 
+iOS QA is available on macOS hosts with Xcode command-line tools and an
+installed Simulator runtime. The worker can bind to a configured simulator
+UDID, boot a simulator by name, or use a single already-booted simulator. It
+skips iOS QA with a diagnostic when `xcrun` or a usable simulator is
+unavailable.
+
 ```nix
 {
   inputs.uriel.url = "github:uriel-agent/uriel";
@@ -200,6 +210,7 @@ Common variables:
 - `URIEL_MAX_CONCURRENT_JOBS`
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
+- `URIEL_ENABLE_IOS_QA`
 - `URIEL_ADAPTER_REPO_BOOTSTRAP`
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
@@ -208,6 +219,10 @@ Common variables:
 - `URIEL_ANDROID_APK_URL`
 - `URIEL_ANDROID_APK_SHA256`
 - `URIEL_ANDROID_APP_PACKAGE`
+- `URIEL_IOS_SIMULATOR_UDID`
+- `URIEL_IOS_SIMULATOR_UDIDS`
+- `URIEL_IOS_SIMULATOR_NAME`
+- `URIEL_IOS_BOOT_TIMEOUT_SECONDS`
 
 For safe concurrent Android QA, configure `URIEL_ANDROID_AVDS` with one AVD
 per slot. Uriel leases each AVD exclusively for a whole job and exports its
@@ -217,6 +232,12 @@ once, verifies its SHA-256, and ensures the configured package is installed on
 the leased device before the harness starts. `URIEL_ANDROID_APK_URL` may also
 be a `file://` URL when an operator maintains the signed APK on the worker
 host; the checksum is still verified before every install.
+
+On macOS, configure `URIEL_IOS_SIMULATOR_UDID` to select one simulator, or
+`URIEL_IOS_SIMULATOR_UDIDS` as a comma-separated pool for concurrent jobs.
+Uriel leases each configured UDID exclusively for a whole job. When no UDID is
+configured, `URIEL_IOS_SIMULATOR_NAME` selects a simulator to boot by name.
+`URIEL_IOS_BOOT_TIMEOUT_SECONDS` defaults to 300.
 
 The `claude-code` harness authenticates through the environment file: set
 `ANTHROPIC_API_KEY`, or a long-lived subscription token minted with

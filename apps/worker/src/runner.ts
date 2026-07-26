@@ -41,7 +41,7 @@ import { LocalJobStore } from "./store.ts";
 export async function runJob(
   job: Job,
   config: WorkerConfig,
-  runtime: { androidAvd?: string } = {}
+  runtime: { androidAvd?: string; iosSimulatorUdid?: string } = {}
 ): Promise<void> {
   const store = new LocalJobStore(config);
   const reporter = new JobReporter({
@@ -60,7 +60,7 @@ export async function runJob(
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
     let androidSerial: string | undefined;
-    if ((job.qa === "android" || job.qa === "both") && config.enableAndroidQa) {
+    if ((job.qa === "android" || job.qa === "both" || job.qa === "all") && config.enableAndroidQa) {
       try {
         androidSerial = await ensureAndroidDevice(config, reporter, evidence, runtime.androidAvd);
       } catch (error) {
@@ -110,7 +110,15 @@ export async function runJob(
     if (harnessFailed) {
       throw harnessError;
     }
-    const qaSummaries = await runQa(job, config, artifactsDir, reporter, evidence, androidSerial);
+    const qaSummaries = await runQa(
+      job,
+      config,
+      artifactsDir,
+      reporter,
+      evidence,
+      androidSerial,
+      runtime.iosSimulatorUdid
+    );
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
     }

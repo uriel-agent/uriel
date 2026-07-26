@@ -4,7 +4,7 @@ import {
   type JobCheck
 } from "./checks.ts";
 
-export const qaModes = ["none", "browser", "android", "both"] as const;
+export const qaModes = ["none", "browser", "android", "ios", "both", "all"] as const;
 export type QaMode = (typeof qaModes)[number];
 
 export const jobKinds = ["change", "verify"] as const;
