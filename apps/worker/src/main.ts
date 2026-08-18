@@ -19,6 +19,7 @@ import { JobScheduler } from "./job-scheduler.ts";
 import { JobReporter } from "./reporter.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
 import { LocalJobStore } from "./store.ts";
+import { checkWorkerReadiness } from "./worker-readiness.ts";
 
 const scheduler: {
   androidSlots?: AndroidSlotPool;
@@ -94,6 +95,12 @@ export async function handleRequest(
 
     if (config.workerToken && !authorized(request, config.workerToken)) {
       writeJson(response, 401, { error: "Unauthorized." });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/ready") {
+      const readiness = await checkWorkerReadiness(config);
+      writeJson(response, readiness.ok ? 200 : 503, readiness);
       return;
     }
 

@@ -33,6 +33,7 @@ caches under `/var/lib/uriel/repos`, and job worktrees under
 Implemented v1 surfaces:
 
 - `GET /health`
+- `GET /ready` (authenticated when `URIEL_WORKER_TOKEN` is set)
 - `GET /jobs`
 - `POST /jobs`
 - `GET /jobs/:id`
@@ -215,6 +216,8 @@ Common variables:
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
 - `URIEL_ANDROID_AVDS`
+- `URIEL_ANDROID_ADB_PATH`
+- `URIEL_ANDROID_EMULATOR_PATH`
 - `URIEL_ANDROID_BOOT_TIMEOUT_SECONDS`
 - `URIEL_ANDROID_APK_URL`
 - `URIEL_ANDROID_APK_SHA256`
@@ -232,6 +235,14 @@ once, verifies its SHA-256, and ensures the configured package is installed on
 the leased device before the harness starts. `URIEL_ANDROID_APK_URL` may also
 be a `file://` URL when an operator maintains the signed APK on the worker
 host; the checksum is still verified before every install.
+
+`GET /health` is a cheap liveness check and remains available without worker
+authentication. `GET /ready` verifies Android tool executability, adb
+responsiveness, configured AVD availability, cold-boot capability, and APK
+provisioning configuration without booting an emulator. It returns `503` with
+per-check remediation when the worker cannot safely accept Android QA. Tool
+resolution prefers explicit `URIEL_ANDROID_ADB_PATH` and
+`URIEL_ANDROID_EMULATOR_PATH` values, then stable SDK roots, then `PATH`.
 
 On macOS, configure `URIEL_IOS_SIMULATOR_UDID` to select one simulator, or
 `URIEL_IOS_SIMULATOR_UDIDS` as a comma-separated pool for concurrent jobs.

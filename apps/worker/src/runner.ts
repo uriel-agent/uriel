@@ -20,6 +20,7 @@ import {
   configuredAndroidProvisioning,
   provisionAndroidApp
 } from "./android-provisioning.ts";
+import { resolveAndroidTools } from "./android-tooling.ts";
 import { EvidenceRecorder } from "./evidence.ts";
 import { ensureLinearIssue } from "./linear.ts";
 import {
@@ -76,15 +77,26 @@ export async function runJob(
       if (androidSerial) {
         await provisionAndroidApp(config, androidSerial, reporter, evidence);
         if (shouldCaptureGenericAndroidQa(job)) {
-          try {
-            await recordAndroidClip(
-              "before-qa-screenrecord.mp4",
-              10,
-              artifactsDir,
-              reporter,
-              evidence,
-              androidSerial
+          const adb = (await resolveAndroidTools(config)).adb;
+          if (!adb) {
+            await reporter.event(
+              "qa",
+              "warn",
+              "Skipping pre-harness Android recording because adb is no longer executable."
             );
+          }
+          try {
+            if (adb) {
+              await recordAndroidClip(
+                "before-qa-screenrecord.mp4",
+                10,
+                artifactsDir,
+                reporter,
+                evidence,
+                androidSerial,
+                adb.command
+              );
+            }
           } catch (error) {
             await reporter.event(
               "qa",
