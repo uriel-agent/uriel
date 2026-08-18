@@ -44,6 +44,9 @@ export interface WorkerConfig {
   maxJobEvents: number;
   port: number;
   repoBootstrapAdapter?: string;
+  readinessHistoryMaxGapSeconds: number;
+  readinessHistoryMaxSamples: number;
+  readinessHistoryRetentionDays: number;
   reposDir: string;
   ledgerRetentionDays: number;
   stateDir: string;
@@ -67,6 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   }
   const maxConcurrentJobs = positiveInteger(env.URIEL_MAX_CONCURRENT_JOBS, 1);
   const requestedMaxHeavyJobs = positiveInteger(env.URIEL_MAX_HEAVY_JOBS, 1);
+  const watchdogIntervalSeconds = positiveInteger(env.URIEL_WATCHDOG_INTERVAL_SECONDS, 30);
   const androidSlotCap = new Set(androidAvds).size || 1;
   return {
     androidAdbPath: env.URIEL_ANDROID_ADB_PATH?.trim() || undefined,
@@ -125,6 +129,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     maxJobEvents: positiveInteger(env.URIEL_MAX_JOB_EVENTS, 500),
     opencodeModel: env.OPENCODE_MODEL,
     port: Number.parseInt(env.URIEL_WORKER_PORT ?? "8788", 10),
+    readinessHistoryMaxGapSeconds: positiveInteger(
+      env.URIEL_READINESS_HISTORY_MAX_GAP_SECONDS,
+      watchdogIntervalSeconds * 3
+    ),
+    readinessHistoryMaxSamples: positiveInteger(
+      env.URIEL_READINESS_HISTORY_MAX_SAMPLES,
+      25_000
+    ),
+    readinessHistoryRetentionDays: positiveInteger(
+      env.URIEL_READINESS_HISTORY_RETENTION_DAYS,
+      7
+    ),
     repoBootstrapAdapter: env.URIEL_ADAPTER_REPO_BOOTSTRAP,
     reposDir: env.URIEL_REPOS_DIR ?? `${stateDir}/repos`,
     ledgerRetentionDays: positiveInteger(env.URIEL_LEDGER_RETENTION_DAYS, 30),
@@ -133,7 +149,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workerToken: env.URIEL_WORKER_TOKEN,
     watchdogCooldownSeconds: positiveInteger(env.URIEL_WATCHDOG_COOLDOWN_SECONDS, 300),
     watchdogFailureThreshold: positiveInteger(env.URIEL_WATCHDOG_FAILURE_THRESHOLD, 3),
-    watchdogIntervalSeconds: positiveInteger(env.URIEL_WATCHDOG_INTERVAL_SECONDS, 30),
+    watchdogIntervalSeconds,
     worktreesDir: env.URIEL_WORKTREES_DIR ?? `${stateDir}/worktrees`
   };
 }

@@ -23,6 +23,7 @@ import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
 import { JobScheduler } from "./job-scheduler.ts";
 import { HostCapacityGovernor, type HostCapacityDecision } from "./host-capacity.ts";
 import { JobReporter } from "./reporter.ts";
+import { ReadinessHistory } from "./readiness-history.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
 import { runCommand } from "./shell.ts";
 import { appendWatchdogAlert, SmokeCoordinator } from "./smoke.ts";
@@ -36,6 +37,7 @@ const scheduler: {
   cleanup?: CleanupSupervisor;
   iosSimulatorSlots?: IosSimulatorSlotPool;
   jobs?: JobScheduler;
+  readinessHistory?: ReadinessHistory;
   smoke?: SmokeCoordinator;
   watchdog?: ReadinessWatchdog;
 } = {};
@@ -86,6 +88,17 @@ async function serve(config: WorkerConfig): Promise<void> {
   scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
   scheduler.iosSimulatorSlots = new IosSimulatorSlotPool(config.iosSimulatorUdids);
   scheduler.capacity = new HostCapacityGovernor(config);
+  scheduler.readinessHistory = new ReadinessHistory({
+    filePath: `${config.stateDir}/readiness-history.jsonl`,
+    maxGapMs: config.readinessHistoryMaxGapSeconds * 1_000,
+    maxSamples: config.readinessHistoryMaxSamples,
+    retentionMs: config.readinessHistoryRetentionDays * 24 * 60 * 60 * 1_000
+  });
+  try {
+    await scheduler.readinessHistory.init();
+  } catch (error) {
+    console.error(`Readiness history initialization failed: ${errorMessage(error)}`);
+  }
   scheduler.jobs = new JobScheduler(config.maxConcurrentJobs, (error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   }, {
@@ -182,7 +195,7 @@ export async function handleRequest(
     }
 
     if (request.method === "GET" && url.pathname === "/status") {
-      writeJson(response, 200, await workerTelemetry(config));
+      writeJson(response, 200, await workerTelemetry(config, availabilityWindowMs(url, config)));
       return;
     }
 
@@ -417,7 +430,7 @@ async function currentReadiness(config: WorkerConfig) {
   return checkWorkerReadiness(config, usage, decision);
 }
 
-async function workerTelemetry(config: WorkerConfig) {
+async function workerTelemetry(config: WorkerConfig, windowMs = 24 * 60 * 60 * 1_000) {
   const readiness = await currentReadiness(config);
   const cleanup = scheduler.cleanup ?? new CleanupSupervisor(config);
   const resources = await cleanup.ledger.active();
@@ -430,6 +443,7 @@ async function workerTelemetry(config: WorkerConfig) {
   let provisioningConfigured = false;
   try { provisioningConfigured = Boolean(configuredAndroidProvisioning(config)); } catch { /* readiness explains invalid config */ }
   return {
+    availability: await availabilityTelemetry(windowMs),
     android: scheduler.androidSlots?.state() ?? {
       available: config.androidAvds.length,
       leased: 0,
@@ -457,13 +471,22 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
     probe: async () => {
       const readiness = await currentReadiness(config);
       const state = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
+      const excludedReason = maintenance.owner
+        ? `${maintenance.owner}-maintenance`
+        : state.activeJobs > 0 || state.queuedJobs > 0
+          ? "job-load"
+          : undefined;
       return {
-        actionable: state.activeJobs === 0 && state.queuedJobs === 0 && !maintenance.owner,
+        actionable: !excludedReason,
         causes: readiness.checks
           .filter((check) => check.status === "fail" || check.status === "warn")
           .map((check) => `${check.id}: ${check.detail}`),
+        ...(excludedReason ? { excludedReason } : {}),
         status: readiness.status
       };
+    },
+    record: async (probe, at) => {
+      await scheduler.readinessHistory?.record(probe, at);
     },
     recover: async () => {
       const state = scheduler.jobs?.state();
@@ -485,6 +508,46 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
     },
     threshold: config.watchdogFailureThreshold
   });
+}
+
+function availabilityWindowMs(url: URL, config: WorkerConfig): number {
+  const requested = Number.parseInt(url.searchParams.get("windowSeconds") ?? "", 10);
+  const defaultSeconds = 24 * 60 * 60;
+  const maxSeconds = config.readinessHistoryRetentionDays * 24 * 60 * 60;
+  return Math.max(60, Math.min(Number.isFinite(requested) ? requested : defaultSeconds, maxSeconds)) *
+    1_000;
+}
+
+async function availabilityTelemetry(windowMs: number) {
+  if (!scheduler.readinessHistory) return emptyAvailability(windowMs);
+  try {
+    return await scheduler.readinessHistory.summary(windowMs);
+  } catch (error) {
+    console.error(`Readiness history query failed: ${errorMessage(error)}`);
+    return emptyAvailability(windowMs, "readiness history unavailable");
+  }
+}
+
+function emptyAvailability(windowMs: number, error?: string) {
+  const now = Date.now();
+  return {
+    coveredSeconds: 0,
+    coveragePercentage: 0,
+    degradedSamples: 0,
+    degradedSeconds: 0,
+    excludedSamples: 0,
+    excludedSeconds: 0,
+    ...(error ? { error } : {}),
+    longestGapSeconds: Math.round(windowMs / 10) / 100,
+    readyPercentage: null,
+    readySamples: 0,
+    readySeconds: 0,
+    sampleCount: 0,
+    unobservedSeconds: Math.round(windowMs / 10) / 100,
+    windowEnd: new Date(now).toISOString(),
+    windowSeconds: Math.round(windowMs / 10) / 100,
+    windowStart: new Date(now - windowMs).toISOString()
+  };
 }
 
 function createJob(request: CreateJobRequest): Job {
@@ -581,6 +644,10 @@ function valueAfter(args: string[], flag: string): string | undefined {
     return undefined;
   }
   return args[index + 1];
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

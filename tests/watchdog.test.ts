@@ -82,4 +82,44 @@ describe("ReadinessWatchdog", () => {
       lastStatus: "ready"
     });
   });
+
+  it("records both the degraded probe and the post-recovery result", async () => {
+    let recovered = false;
+    const record = vi.fn(async (_probe: WatchdogProbe, _at: string) => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert: vi.fn(async () => undefined),
+      cooldownMs: 1,
+      intervalMs: 1_000,
+      probe: async () => recovered
+        ? { actionable: true, causes: [], status: "ready" }
+        : { actionable: true, causes: ["adb"], status: "not-ready" },
+      record,
+      recover: async () => { recovered = true; },
+      threshold: 1
+    });
+
+    await watchdog.tick(Date.now());
+
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls[0]?.[0]).toMatchObject({ status: "not-ready" });
+    expect(record.mock.calls[1]?.[0]).toMatchObject({ status: "ready" });
+  });
+
+  it("keeps recovery available when history persistence fails", async () => {
+    const recover = vi.fn(async () => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert: vi.fn(async () => undefined),
+      cooldownMs: 1,
+      intervalMs: 1_000,
+      probe: async () => ({ actionable: true, causes: ["disk"], status: "not-ready" }),
+      record: async () => { throw new Error("history disk full"); },
+      recover,
+      threshold: 1
+    });
+
+    await watchdog.tick(Date.now());
+
+    expect(recover).toHaveBeenCalledOnce();
+    expect(watchdog.snapshot().lastRecordError).toBe("history disk full");
+  });
 });
