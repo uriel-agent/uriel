@@ -90,6 +90,37 @@ describe("worker readiness", () => {
     }));
   });
 
+  it("reports ready when swap is diagnostic-only and live reserves are healthy", async () => {
+    const config = loadConfig({
+      URIEL_CAPACITY_ENFORCE_SWAP: "false",
+      URIEL_CAPACITY_MAX_SWAP_USED_MB: "8192",
+      URIEL_ENABLE_ANDROID_QA: "false"
+    });
+    const decision = await new HostCapacityGovernor(config, async () => ({
+      diskAvailableBytes: 40_000 * 1024 ** 2,
+      memoryAvailableBytes: 8_000 * 1024 ** 2,
+      memoryTotalBytes: 16_000 * 1024 ** 2,
+      swapUsedBytes: 9_000 * 1024 ** 2
+    })).evaluate({ activeHeavyJobs: 0, queuedJobs: 0 });
+
+    const readiness = await checkWorkerReadiness(
+      config,
+      { activeHeavyJobs: 0, queuedJobs: 0 },
+      decision
+    );
+
+    expect(readiness).toMatchObject({
+      capacity: { status: "available", swap: { enforced: false, ok: false } },
+      ok: true,
+      status: "ready"
+    });
+    expect(readiness.checks).toContainEqual(expect.objectContaining({
+      detail: expect.stringContaining("diagnostic-only"),
+      id: "host.capacity",
+      status: "pass"
+    }));
+  });
+
   it("keeps liveness public and makes detailed readiness authenticated", async () => {
     const config = await readyConfig();
     const baseUrl = await startWorker(config);

@@ -210,6 +210,7 @@ Common variables:
 - `URIEL_CODEX_EFFORT`
 - `URIEL_MAX_CONCURRENT_JOBS`
 - `URIEL_MAX_HEAVY_JOBS` (defaults to `1`; clamped to total jobs and dedicated Android slots)
+- `URIEL_CAPACITY_ENFORCE_SWAP` (defaults to `false` on macOS and `true` elsewhere)
 - `URIEL_CAPACITY_MIN_FREE_MEMORY_MB` (defaults to `4096`)
 - `URIEL_CAPACITY_MAX_SWAP_USED_MB` (defaults to `32768`)
 - `URIEL_CAPACITY_MIN_FREE_DISK_MB` (defaults to `20480`)
@@ -286,14 +287,19 @@ per-check remediation when the worker cannot safely accept Android QA. Tool
 resolution prefers explicit `URIEL_ANDROID_ADB_PATH` and
 `URIEL_ANDROID_EMULATOR_PATH` values, then stable SDK roots, then `PATH`.
 
-The worker also admits heavy jobs only while configured RAM, swap, disk, and
-worker-slot reserves are available. Admission happens before a job receives an
+The worker also admits heavy jobs only while configured RAM, disk, worker-slot,
+and (when enabled) swap reserves are available. Admission happens before a job receives an
 emulator lease, and the worker rechecks immediately before emulator, coding
 harness, and QA process launches. Temporary pressure leaves jobs queued in FIFO
 order and retries automatically while `/health` stays online. `/ready` exposes
 the current readings, configured limits, active/queued ownership, missing
 readings, and the blocking reason. When a reading is unavailable, Uriel uses a
 conservative single-heavy-job policy instead of assuming unlimited capacity.
+On macOS, cumulative swap is retained in telemetry but is diagnostic-only by
+default because it commonly remains high after live memory pressure recovers;
+the existing `memory_pressure` reading remains enforced. Set
+`URIEL_CAPACITY_ENFORCE_SWAP=true` to opt back into the absolute swap cap. Linux
+continues enforcing the cap by default.
 
 Every job durably journals its exact worktree, artifact directory, harness PID
 and start identity, device lease, AVD/serial binding, and package marker under

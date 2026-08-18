@@ -30,7 +30,7 @@ export interface HostCapacitySnapshot {
   memory: HostCapacityResource & { totalBytes: number | null };
   missingReadings: string[];
   status: "available" | "degraded" | "pressured";
-  swap: HostCapacityResource;
+  swap: HostCapacityResource & { enforced: boolean };
   worker: WorkerCapacityUsage & { maxHeavyJobs: number };
 }
 
@@ -70,14 +70,14 @@ export class HostCapacityGovernor {
     );
     const missingReadings = [
       ...(memory.ok === null ? ["memory"] : []),
-      ...(swap.ok === null ? ["swap"] : []),
+      ...(this.config.capacityEnforceSwap && swap.ok === null ? ["swap"] : []),
       ...(disk.ok === null ? ["disk"] : [])
     ];
     const reasons = [
       ...(memory.ok === false
         ? [`available RAM ${formatMiB(memory.actualBytes)} is below reserve ${formatMiB(memory.limitBytes)}`]
         : []),
-      ...(swap.ok === false
+      ...(this.config.capacityEnforceSwap && swap.ok === false
         ? [`swap usage ${formatMiB(swap.actualBytes)} exceeds limit ${formatMiB(swap.limitBytes)}`]
         : []),
       ...(disk.ok === false
@@ -105,7 +105,7 @@ export class HostCapacityGovernor {
       status: admitted
         ? missingReadings.length > 0 ? "degraded" : "available"
         : "pressured",
-      swap,
+      swap: { ...swap, enforced: this.config.capacityEnforceSwap },
       worker: { ...usage, maxHeavyJobs: this.config.maxHeavyJobs }
     };
     return {

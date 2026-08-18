@@ -14,6 +14,7 @@ export interface WorkerConfig {
   browserUrl?: string;
   callbackSecret?: string;
   callbackTimeoutSeconds: number;
+  capacityEnforceSwap: boolean;
   capacityMaxSwapUsedMb: number;
   capacityMinFreeDiskMb: number;
   capacityMinFreeMemoryMb: number;
@@ -94,6 +95,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       1,
       Number.parseInt(env.URIEL_CALLBACK_TIMEOUT_SECONDS ?? "60", 10) || 60
     ),
+    capacityEnforceSwap: env.URIEL_CAPACITY_ENFORCE_SWAP === undefined
+      ? process.platform !== "darwin"
+      : env.URIEL_CAPACITY_ENFORCE_SWAP !== "false" && env.URIEL_CAPACITY_ENFORCE_SWAP !== "0",
     capacityMaxSwapUsedMb: positiveInteger(env.URIEL_CAPACITY_MAX_SWAP_USED_MB, 32 * 1024),
     capacityMinFreeDiskMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_DISK_MB, 20 * 1024),
     capacityMinFreeMemoryMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_MEMORY_MB, 4 * 1024),
