@@ -9,6 +9,7 @@ export interface WorkerConfig {
   androidBootTimeoutSeconds: number;
   androidEmulatorPath?: string;
   artifactsDir: string;
+  artifactRetentionDays: number;
   allowedRepos: string[];
   browserUrl?: string;
   callbackSecret?: string;
@@ -17,10 +18,12 @@ export interface WorkerConfig {
   capacityMinFreeDiskMb: number;
   capacityMinFreeMemoryMb: number;
   capacityRetrySeconds: number;
+  cleanupGraceSeconds: number;
   claudeModel?: string;
   codexEffort?: string;
   codexModel?: string;
   dryRun: boolean;
+  deviceIdleTtlSeconds: number;
   enableAndroidQa: boolean;
   enableBrowserQa: boolean;
   enableIosQa: boolean;
@@ -38,9 +41,11 @@ export interface WorkerConfig {
   opencodeModel?: string;
   maxConcurrentJobs: number;
   maxHeavyJobs: number;
+  maxJobEvents: number;
   port: number;
   repoBootstrapAdapter?: string;
   reposDir: string;
+  ledgerRetentionDays: number;
   stateDir: string;
   workerToken?: string;
   worktreesDir: string;
@@ -74,6 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     androidEmulatorPath: env.URIEL_ANDROID_EMULATOR_PATH?.trim() || undefined,
     allowedRepos: parseCsv(env.URIEL_ALLOWED_REPOS),
     artifactsDir: env.URIEL_ARTIFACTS_DIR ?? `${stateDir}/artifacts`,
+    artifactRetentionDays: positiveInteger(env.URIEL_ARTIFACT_RETENTION_DAYS, 7),
     browserUrl: env.URIEL_BROWSER_URL,
     callbackSecret: env.URIEL_CALLBACK_SECRET,
     callbackTimeoutSeconds: Math.max(
@@ -84,10 +90,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     capacityMinFreeDiskMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_DISK_MB, 20 * 1024),
     capacityMinFreeMemoryMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_MEMORY_MB, 4 * 1024),
     capacityRetrySeconds: positiveInteger(env.URIEL_CAPACITY_RETRY_SECONDS, 15),
+    cleanupGraceSeconds: positiveInteger(env.URIEL_CLEANUP_GRACE_SECONDS, 10),
     claudeModel: env.URIEL_CLAUDE_MODEL,
     codexEffort: env.URIEL_CODEX_EFFORT,
     codexModel: env.URIEL_CODEX_MODEL,
     dryRun: env.URIEL_DRY_RUN === "1" || env.URIEL_DRY_RUN === "true",
+    deviceIdleTtlSeconds: positiveInteger(env.URIEL_DEVICE_IDLE_TTL_SECONDS, 300),
     enableAndroidQa: env.URIEL_ENABLE_ANDROID_QA !== "false",
     enableBrowserQa: env.URIEL_ENABLE_BROWSER_QA !== "false",
     enableIosQa: env.URIEL_ENABLE_IOS_QA !== "false",
@@ -110,10 +118,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     iosSimulatorUdids,
     maxConcurrentJobs,
     maxHeavyJobs: Math.min(requestedMaxHeavyJobs, maxConcurrentJobs, androidSlotCap),
+    maxJobEvents: positiveInteger(env.URIEL_MAX_JOB_EVENTS, 500),
     opencodeModel: env.OPENCODE_MODEL,
     port: Number.parseInt(env.URIEL_WORKER_PORT ?? "8788", 10),
     repoBootstrapAdapter: env.URIEL_ADAPTER_REPO_BOOTSTRAP,
     reposDir: env.URIEL_REPOS_DIR ?? `${stateDir}/repos`,
+    ledgerRetentionDays: positiveInteger(env.URIEL_LEDGER_RETENTION_DAYS, 30),
     stateDir,
     workerToken: env.URIEL_WORKER_TOKEN,
     worktreesDir: env.URIEL_WORKTREES_DIR ?? `${stateDir}/worktrees`

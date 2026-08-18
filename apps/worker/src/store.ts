@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import {
@@ -16,14 +16,17 @@ const terminalJobStatuses = new Set<JobStatus>([
   "completed",
   "failed"
 ]);
+const jobLocks = new Map<string, Promise<void>>();
 
 export class LocalJobStore {
   readonly artifactsDir: string;
   private readonly jobsDir: string;
+  private readonly maxJobEvents: number;
 
   constructor(config: WorkerConfig) {
     this.jobsDir = join(config.stateDir, "jobs");
     this.artifactsDir = config.artifactsDir;
+    this.maxJobEvents = config.maxJobEvents;
   }
 
   async init(): Promise<void> {
@@ -32,9 +35,10 @@ export class LocalJobStore {
   }
 
   async putJob(job: Job): Promise<Job> {
-    await this.init();
-    await writeJson(this.jobPath(job.id), job);
-    return job;
+    return this.withLock(job.id, async () => {
+      await this.writeJob(job);
+      return job;
+    });
   }
 
   async getJob(jobId: string): Promise<Job | undefined> {
@@ -60,39 +64,40 @@ export class LocalJobStore {
 
   async failRunningJobsAfterRestart(): Promise<Job[]> {
     const running = (await this.listJobs()).filter((job) => job.status === "running");
-    const failed = await Promise.all(
-      running.map(async (job) => {
+    const failed = await Promise.all(running.map((job) => this.withLock(job.id, async () => {
+        const current = await this.getJob(job.id);
+        if (current?.status !== "running") return undefined;
         const next: Job = {
-          ...job,
+          ...current,
           events: [
-            ...job.events,
+            ...current.events,
             createJobEvent(
               "worker",
               "error",
               "Worker restarted while this job was running; marking it failed."
             )
-          ].slice(-500),
+          ].slice(-this.maxJobEvents),
           status: "failed",
           updatedAt: new Date().toISOString()
         };
-        return this.putJob(next);
-      })
-    );
-    return failed;
+        await this.writeJob(next);
+        return next;
+      })));
+    return failed.filter((job): job is Job => Boolean(job));
   }
 
   async appendEvent(jobId: string, event: JobEvent): Promise<Job | undefined> {
-    const job = await this.getJob(jobId);
-    if (!job) {
-      return undefined;
-    }
-    const next = {
-      ...job,
-      events: [...job.events, event].slice(-500),
-      updatedAt: new Date().toISOString()
-    };
-    await this.putJob(next);
-    return next;
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      const next = {
+        ...job,
+        events: [...job.events, event].slice(-this.maxJobEvents),
+        updatedAt: new Date().toISOString()
+      };
+      await this.writeJob(next);
+      return next;
+    });
   }
 
   async setStatus(jobId: string, status: JobStatus): Promise<Job | undefined> {
@@ -109,75 +114,71 @@ export class LocalJobStore {
     jobId: string,
     status: JobStatus
   ): Promise<{ changed: boolean; job: Job } | undefined> {
-    const job = await this.getJob(jobId);
-    if (!job) {
-      return undefined;
-    }
-    if (terminalJobStatuses.has(job.status)) {
-      return { changed: false, job };
-    }
-    const next = { ...job, status, updatedAt: new Date().toISOString() };
-    await this.putJob(next);
-    await this.appendEvent(
-      jobId,
-      createJobEvent("job", "info", `Status changed to ${status}.`)
-    );
-    return { changed: true, job: (await this.getJob(jobId)) ?? next };
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      if (terminalJobStatuses.has(job.status)) return { changed: false, job };
+      const now = new Date().toISOString();
+      const next: Job = {
+        ...job,
+        events: [
+          ...job.events,
+          createJobEvent("job", "info", `Status changed to ${status}.`)
+        ].slice(-this.maxJobEvents),
+        status,
+        updatedAt: now
+      };
+      await this.writeJob(next);
+      return { changed: true, job: next };
+    });
   }
 
   async setCheckResults(
     jobId: string,
     checkResults: CheckResult[]
   ): Promise<Job | undefined> {
-    const job = await this.getJob(jobId);
-    if (!job) {
-      return undefined;
-    }
-    const next = {
-      ...job,
-      checkResults,
-      updatedAt: new Date().toISOString()
-    };
-    await this.putJob(next);
-    return next;
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      const next = { ...job, checkResults, updatedAt: new Date().toISOString() };
+      await this.writeJob(next);
+      return next;
+    });
   }
 
   async setPullRequestUrl(
     jobId: string,
     pullRequestUrl: string
   ): Promise<Job | undefined> {
-    const job = await this.getJob(jobId);
-    if (!job) {
-      return undefined;
-    }
-    const next = {
-      ...job,
-      pullRequestUrl,
-      updatedAt: new Date().toISOString()
-    };
-    await this.putJob(next);
-    return next;
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      const next = { ...job, pullRequestUrl, updatedAt: new Date().toISOString() };
+      await this.writeJob(next);
+      return next;
+    });
   }
 
   async addArtifact(jobId: string, artifact: Artifact): Promise<Job | undefined> {
-    const job = await this.getJob(jobId);
-    if (!job) {
-      return undefined;
-    }
-    const next = {
-      ...job,
-      artifacts: [...job.artifacts, artifact],
-      updatedAt: new Date().toISOString()
-    };
-    await this.putJob(next);
-    await this.appendEvent(
-      jobId,
-      createJobEvent("artifact", "info", `Captured artifact ${artifact.name}.`, {
-        name: artifact.name,
-        path: artifact.url ?? null
-      })
-    );
-    return this.getJob(jobId);
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      const now = new Date().toISOString();
+      const next: Job = {
+        ...job,
+        artifacts: [...job.artifacts, artifact],
+        events: [
+          ...job.events,
+          createJobEvent("artifact", "info", `Captured artifact ${artifact.name}.`, {
+            name: artifact.name,
+            path: artifact.url ?? null
+          })
+        ].slice(-this.maxJobEvents),
+        updatedAt: now
+      };
+      await this.writeJob(next);
+      return next;
+    });
   }
 
   async artifactInfo(jobId: string, name: string): Promise<{ path: string; size: number } | undefined> {
@@ -196,9 +197,32 @@ export class LocalJobStore {
   private jobPath(jobId: string): string {
     return join(this.jobsDir, `${jobId}.json`);
   }
+
+  private async writeJob(job: Job): Promise<void> {
+    await this.init();
+    await writeJson(this.jobPath(job.id), job);
+  }
+
+  private async withLock<T>(jobId: string, operation: () => Promise<T>): Promise<T> {
+    const path = this.jobPath(jobId);
+    const previous = jobLocks.get(path) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolveLock) => { release = resolveLock; });
+    const chain = previous.then(() => current);
+    jobLocks.set(path, chain);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (jobLocks.get(path) === chain) jobLocks.delete(path);
+    }
+  }
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const temporary = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(temporary, path);
 }

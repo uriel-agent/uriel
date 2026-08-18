@@ -214,6 +214,11 @@ Common variables:
 - `URIEL_CAPACITY_MAX_SWAP_USED_MB` (defaults to `32768`)
 - `URIEL_CAPACITY_MIN_FREE_DISK_MB` (defaults to `20480`)
 - `URIEL_CAPACITY_RETRY_SECONDS` (defaults to `15`)
+- `URIEL_CLEANUP_GRACE_SECONDS` (defaults to `10`)
+- `URIEL_DEVICE_IDLE_TTL_SECONDS` (defaults to `300`)
+- `URIEL_ARTIFACT_RETENTION_DAYS` (defaults to `7`)
+- `URIEL_LEDGER_RETENTION_DAYS` (defaults to `30`)
+- `URIEL_MAX_JOB_EVENTS` (defaults to `500`)
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
 - `URIEL_ENABLE_IOS_QA`
@@ -282,6 +287,17 @@ order and retries automatically while `/health` stays online. `/ready` exposes
 the current readings, configured limits, active/queued ownership, missing
 readings, and the blocking reason. When a reading is unavailable, Uriel uses a
 conservative single-heavy-job policy instead of assuming unlimited capacity.
+
+Every job durably journals its exact worktree, artifact directory, harness PID
+and start identity, device lease, AVD/serial binding, and package marker under
+the worker state directory. Terminal cleanup is idempotent: it rechecks the
+journaled owner and live process/device identity before terminating anything,
+removes the job worktree, releases markers and leases, and retains artifacts
+only for the configured window. Completed jobs leave worker AVDs warm for the
+idle TTL; failures and cancellations reap them immediately. Startup
+reconciliation cleans resources left by a crash before accepting queued work.
+Interactive `dungeonqa_pool_*` AVDs, physical devices, unjournaled processes,
+and paths outside worker roots are never terminated or deleted.
 
 On macOS, configure `URIEL_IOS_SIMULATOR_UDID` to select one simulator, or
 `URIEL_IOS_SIMULATOR_UDIDS` as a comma-separated pool for concurrent jobs.
