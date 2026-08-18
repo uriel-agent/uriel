@@ -23,6 +23,10 @@ import {
   configuredAndroidProvisioning,
   provisionAndroidApp
 } from "./android-provisioning.ts";
+import {
+  androidDeviceGrantEnvironment,
+  buildAndroidDeviceGrant
+} from "./android-device-grant.ts";
 import { resolveAndroidTools } from "./android-tooling.ts";
 import { EvidenceRecorder } from "./evidence.ts";
 import { ensureLinearIssue } from "./linear.ts";
@@ -112,6 +116,7 @@ async function runJobInternal(
     await runProfileSetup(job, config, worktree, reporter, evidence);
     await assertJobActive(store, job.id, runtime.signal);
     let androidSerial: string | undefined;
+    let androidDeviceGrantPath: string | undefined;
     if ((job.qa === "android" || job.qa === "both" || job.qa === "all") && config.enableAndroidQa) {
       try {
         await waitForHostCapacity("Android emulator allocation", config, reporter, runtime, runtime.signal);
@@ -154,6 +159,30 @@ async function runJobInternal(
             serial: androidSerial
           });
         }
+        const androidAvd = runtime.androidAvd ?? config.androidAvd;
+        if (!androidAvd) {
+          throw new Error("Android device grant requires the worker-owned AVD identity.");
+        }
+        androidDeviceGrantPath = join(artifactsDir, "uriel-android-device-grant.json");
+        await reporter.uploadArtifact(
+          "uriel-android-device-grant.json",
+          JSON.stringify(
+            buildAndroidDeviceGrant({
+              avd: androidAvd,
+              jobId: job.id,
+              serial: androidSerial,
+              worktree
+            }),
+            null,
+            2
+          ) + "\n",
+          "application/json"
+        );
+        await reporter.event(
+          "qa",
+          "info",
+          `Granted worker-owned Android AVD ${androidAvd} to the harness for job-scoped QAX execution.`
+        );
         if (shouldCaptureGenericAndroidQa(job)) {
           const adb = (await resolveAndroidTools(config)).adb;
           if (!adb) {
@@ -198,7 +227,9 @@ async function runJobInternal(
         reporter,
         evidence,
         ledger,
-        androidSerial
+        androidSerial,
+        runtime.androidAvd ?? config.androidAvd,
+        androidDeviceGrantPath
       );
     } catch (error) {
       harnessError = error;
@@ -487,7 +518,9 @@ async function runHarness(
   reporter: JobReporter,
   evidence: EvidenceRecorder,
   ledger: ResourceLedger,
-  androidSerial?: string
+  androidSerial?: string,
+  androidAvd?: string,
+  androidDeviceGrantPath?: string
 ): Promise<void> {
   const harnessId = metadataString(job, "harness") ?? config.harnessAdapter ?? "opencode";
   if (!isHarnessId(harnessId)) {
@@ -525,7 +558,18 @@ async function runHarness(
   try {
     result = await runObservedCommand(evidence, invocation.command, invocation.args, {
       cwd: worktree,
-      ...(androidSerial ? { env: { ANDROID_SERIAL: androidSerial } } : {}),
+      ...(androidSerial && androidAvd && androidDeviceGrantPath
+        ? {
+            env: androidDeviceGrantEnvironment({
+              avd: androidAvd,
+              grantPath: androidDeviceGrantPath,
+              jobId: job.id,
+              serial: androidSerial
+            })
+          }
+        : androidSerial
+          ? { env: { ANDROID_SERIAL: androidSerial } }
+          : {}),
       onSpawn: async (pid) => {
         const processStartedAt = await readProcessStart(pid);
         await ledger.record(job.id, "harness-process", "harness-process", {
