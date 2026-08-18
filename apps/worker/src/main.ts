@@ -16,14 +16,19 @@ import {
 import { loadConfig, type WorkerConfig } from "./config.ts";
 import { CleanupSupervisor } from "./cleanup.ts";
 import { AndroidSlotPool } from "./android-slots.ts";
+import { configuredAndroidProvisioning } from "./android-provisioning.ts";
 import { androidAvdOwnershipErrors } from "./android-ownership.ts";
+import { resolveAndroidTools } from "./android-tooling.ts";
 import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
 import { JobScheduler } from "./job-scheduler.ts";
 import { HostCapacityGovernor, type HostCapacityDecision } from "./host-capacity.ts";
 import { JobReporter } from "./reporter.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
+import { runCommand } from "./shell.ts";
+import { appendWatchdogAlert, SmokeCoordinator } from "./smoke.ts";
 import { LocalJobStore } from "./store.ts";
 import { checkWorkerReadiness } from "./worker-readiness.ts";
+import { ReadinessWatchdog } from "./watchdog.ts";
 
 const scheduler: {
   androidSlots?: AndroidSlotPool;
@@ -31,7 +36,10 @@ const scheduler: {
   cleanup?: CleanupSupervisor;
   iosSimulatorSlots?: IosSimulatorSlotPool;
   jobs?: JobScheduler;
+  smoke?: SmokeCoordinator;
+  watchdog?: ReadinessWatchdog;
 } = {};
+const maintenance: { owner?: "smoke" | "watchdog" } = {};
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -82,6 +90,9 @@ async function serve(config: WorkerConfig): Promise<void> {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   }, {
     admission: async ({ activeJobs, queuedJobs }) => {
+      if (maintenance.owner) {
+        return { admitted: false, reason: `${maintenance.owner} maintenance owns the heavy-resource gate` };
+      }
       const decision = await scheduler.capacity?.evaluate({
         activeHeavyJobs: activeJobs,
         queuedJobs
@@ -104,6 +115,28 @@ async function serve(config: WorkerConfig): Promise<void> {
     },
     retryDelayMs: config.capacityRetrySeconds * 1_000
   });
+  scheduler.smoke = new SmokeCoordinator({
+    androidSlots: scheduler.androidSlots,
+    beginExclusive: () => {
+      const state = scheduler.jobs?.state();
+      if (maintenance.owner || !state || state.activeJobs > 0 || state.queuedJobs > 0) {
+        return false;
+      }
+      maintenance.owner = "smoke";
+      return true;
+    },
+    capacity: scheduler.capacity,
+    cleanup: scheduler.cleanup,
+    config,
+    endExclusive: () => {
+      maintenance.owner = undefined;
+      scheduler.jobs?.wake();
+    },
+    schedulerState: () => scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 },
+    store
+  });
+  scheduler.watchdog = createWatchdog(config);
+  scheduler.watchdog.start();
   const server = createServer((request, response) => {
     void handleRequest(request, response, config);
   });
@@ -143,14 +176,26 @@ export async function handleRequest(
     }
 
     if (request.method === "GET" && url.pathname === "/ready") {
-      const schedulerState = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
-      const usage = {
-        activeHeavyJobs: schedulerState.activeJobs,
-        queuedJobs: schedulerState.queuedJobs
-      };
-      const decision = await (scheduler.capacity ?? new HostCapacityGovernor(config)).evaluate(usage);
-      const readiness = await checkWorkerReadiness(config, usage, decision);
+      const readiness = await currentReadiness(config);
       writeJson(response, readiness.ok ? 200 : 503, readiness);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/status") {
+      writeJson(response, 200, await workerTelemetry(config));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/smoke") {
+      if (!scheduler.smoke) {
+        writeJson(response, 503, { error: "Readiness smoke is unavailable before worker startup." });
+        return;
+      }
+      const started = scheduler.smoke.start();
+      writeJson(response, started.accepted ? 202 : 409, {
+        ...started,
+        smoke: scheduler.smoke.snapshot()
+      });
       return;
     }
 
@@ -352,6 +397,83 @@ async function appendCapacityEvent(
 
 function capacityDecisionJson(decision: HostCapacityDecision): JsonValue {
   return JSON.parse(JSON.stringify(decision)) as JsonValue;
+}
+
+async function currentReadiness(config: WorkerConfig) {
+  const state = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
+  const usage = { activeHeavyJobs: state.activeJobs, queuedJobs: state.queuedJobs };
+  const decision = await (scheduler.capacity ?? new HostCapacityGovernor(config)).evaluate(usage);
+  return checkWorkerReadiness(config, usage, decision);
+}
+
+async function workerTelemetry(config: WorkerConfig) {
+  const readiness = await currentReadiness(config);
+  const cleanup = scheduler.cleanup ?? new CleanupSupervisor(config);
+  const resources = await cleanup.ledger.active();
+  const resourceCounts = Object.fromEntries(
+    [...new Set(resources.map(({ kind }) => kind))].map((kind) => [
+      kind,
+      resources.filter((resource) => resource.kind === kind).length
+    ])
+  );
+  let provisioningConfigured = false;
+  try { provisioningConfigured = Boolean(configuredAndroidProvisioning(config)); } catch { /* readiness explains invalid config */ }
+  return {
+    android: scheduler.androidSlots?.state() ?? {
+      available: config.androidAvds.length,
+      leased: 0,
+      total: config.androidAvds.length,
+      waiting: 0
+    },
+    cleanup: { activeResourceCounts: resourceCounts, activeResources: resources.length },
+    provisioning: {
+      configured: provisioningConfigured,
+      packageName: config.androidAppPackage ?? null
+    },
+    queue: scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 },
+    readiness,
+    service: "uriel-worker",
+    smoke: scheduler.smoke?.snapshot() ?? { running: false },
+    watchdog: scheduler.watchdog?.snapshot() ?? { consecutiveDegraded: 0, running: false }
+  };
+}
+
+function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
+  return new ReadinessWatchdog({
+    alert: async (probe) => appendWatchdogAlert(config, probe),
+    cooldownMs: config.watchdogCooldownSeconds * 1_000,
+    intervalMs: config.watchdogIntervalSeconds * 1_000,
+    probe: async () => {
+      const readiness = await currentReadiness(config);
+      const state = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
+      return {
+        actionable: state.activeJobs === 0 && state.queuedJobs === 0 && !maintenance.owner,
+        causes: readiness.checks
+          .filter((check) => check.status === "fail" || check.status === "warn")
+          .map((check) => `${check.id}: ${check.detail}`),
+        status: readiness.status
+      };
+    },
+    recover: async () => {
+      const state = scheduler.jobs?.state();
+      if (maintenance.owner || !state || state.activeJobs > 0 || state.queuedJobs > 0) return;
+      maintenance.owner = "watchdog";
+      try {
+        const confirmed = scheduler.jobs?.state();
+        if (!confirmed || confirmed.activeJobs > 0 || confirmed.queuedJobs > 0) return;
+        await scheduler.cleanup?.reconcileStartup();
+        const adb = (await resolveAndroidTools(config)).adb;
+        if (adb) {
+          await runCommand(adb.command, ["kill-server"], { timeoutMs: 30_000 });
+          await runCommand(adb.command, ["start-server"], { timeoutMs: 30_000 });
+        }
+      } finally {
+        maintenance.owner = undefined;
+        scheduler.jobs?.wake();
+      }
+    },
+    threshold: config.watchdogFailureThreshold
+  });
 }
 
 function createJob(request: CreateJobRequest): Job {

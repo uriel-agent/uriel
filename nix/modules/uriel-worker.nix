@@ -189,6 +189,30 @@ in
       description = "Idle time before a released worker-owned Android device is stopped.";
     };
 
+    watchdogIntervalSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 30;
+      description = "Interval between internal readiness watchdog probes.";
+    };
+
+    watchdogFailureThreshold = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 3;
+      description = "Consecutive degraded probes required before self-recovery.";
+    };
+
+    watchdogCooldownSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "Minimum delay between bounded watchdog recovery attempts.";
+    };
+
+    smokeHistoryLimit = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 50;
+      description = "Maximum terminal scheduled-smoke job records retained.";
+    };
+
     environmentFiles = lib.mkOption {
       type = lib.types.listOf lib.types.path;
       default = [ ];
@@ -347,6 +371,10 @@ in
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;
         URIEL_MAX_HEAVY_JOBS = toString cfg.maxHeavyJobs;
         URIEL_MAX_JOB_EVENTS = toString cfg.maxJobEvents;
+        URIEL_SMOKE_HISTORY_LIMIT = toString cfg.smokeHistoryLimit;
+        URIEL_WATCHDOG_COOLDOWN_SECONDS = toString cfg.watchdogCooldownSeconds;
+        URIEL_WATCHDOG_FAILURE_THRESHOLD = toString cfg.watchdogFailureThreshold;
+        URIEL_WATCHDOG_INTERVAL_SECONDS = toString cfg.watchdogIntervalSeconds;
         URIEL_CALLBACK_TIMEOUT_SECONDS = toString cfg.callbackTimeoutSeconds;
         URIEL_STATE_DIR = toString cfg.stateDir;
         URIEL_WORKER_HOST = cfg.host;

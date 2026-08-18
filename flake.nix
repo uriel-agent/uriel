@@ -18,6 +18,7 @@
     in
     {
       nixosModules.uriel-worker = import ./nix/modules/uriel-worker.nix self;
+      nixosModules.uriel-smoke = import ./nix/modules/uriel-smoke.nix;
       homeManagerModules.uriel = import ./nix/modules/home-manager.nix self;
 
       packages = eachSystem (

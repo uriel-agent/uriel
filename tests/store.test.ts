@@ -80,6 +80,22 @@ describe("LocalJobStore restart recovery", () => {
     expect(persisted?.status).toBe("cancelled");
     expect(persisted?.events).toHaveLength(26);
   });
+
+  it("bounds terminal scheduled-smoke job history", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "uriel-store-"));
+    temporaryDirectories.push(stateDir);
+    const store = new LocalJobStore(loadConfig({ URIEL_STATE_DIR: stateDir }));
+    for (const index of [1, 2, 3]) {
+      const job = jobWithStatus("completed");
+      job.id = `smoke_${index}`;
+      job.source = "watchdog";
+      job.createdAt = `2026-08-18T00:00:0${index}.000Z`;
+      await store.putJob(job);
+    }
+
+    expect(await store.pruneJobs((job) => job.source === "watchdog", 2)).toEqual(["smoke_1"]);
+    expect((await store.listJobs()).map(({ id }) => id)).toEqual(["smoke_3", "smoke_2"]);
+  });
 });
 
 function jobWithStatus(status: Job["status"]): Job {

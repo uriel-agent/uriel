@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import {
@@ -179,6 +179,18 @@ export class LocalJobStore {
       await this.writeJob(next);
       return next;
     });
+  }
+
+  async pruneJobs(predicate: (job: Job) => boolean, keep: number): Promise<string[]> {
+    const candidates = (await this.listJobs()).filter(predicate);
+    const removed: string[] = [];
+    for (const job of candidates.slice(Math.max(0, keep))) {
+      await this.withLock(job.id, async () => {
+        await rm(this.jobPath(job.id), { force: true });
+      });
+      removed.push(job.id);
+    }
+    return removed;
   }
 
   async artifactInfo(jobId: string, name: string): Promise<{ path: string; size: number } | undefined> {

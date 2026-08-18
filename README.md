@@ -219,6 +219,10 @@ Common variables:
 - `URIEL_ARTIFACT_RETENTION_DAYS` (defaults to `7`)
 - `URIEL_LEDGER_RETENTION_DAYS` (defaults to `30`)
 - `URIEL_MAX_JOB_EVENTS` (defaults to `500`)
+- `URIEL_WATCHDOG_INTERVAL_SECONDS` (defaults to `30`)
+- `URIEL_WATCHDOG_FAILURE_THRESHOLD` (defaults to `3`)
+- `URIEL_WATCHDOG_COOLDOWN_SECONDS` (defaults to `300`)
+- `URIEL_SMOKE_HISTORY_LIMIT` (defaults to `50`)
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
 - `URIEL_ENABLE_IOS_QA`
@@ -298,6 +302,37 @@ idle TTL; failures and cancellations reap them immediately. Startup
 reconciliation cleans resources left by a crash before accepting queued work.
 Interactive `dungeonqa_pool_*` AVDs, physical devices, unjournaled processes,
 and paths outside worker roots are never terminated or deleted.
+
+`GET /status` is an authenticated, secret-free operational snapshot covering
+readiness causes, queue depth, active jobs and Android slots, capacity readings,
+active cleanup resources, provisioning configuration, watchdog state, and the
+latest readiness smoke. The watchdog requires consecutive degraded probes,
+never recovers across active/queued real work, rate-limits recovery by cooldown,
+reconciles owned resources, restarts adb, and writes a structured actionable
+alert to `readiness-alerts.jsonl` only if recovery does not restore readiness.
+
+`POST /smoke` starts an asynchronous exclusive smoke. It refuses to start while
+a real job is active or queued, passes through the same capacity governor,
+cold-stops and boots a dedicated AVD, converges the pinned APK, runs
+`adb shell echo uriel-smoke`, and tears the device down. Import and enable the
+`uriel-smoke` NixOS module for a persistent randomized timer:
+
+```nix
+imports = [ inputs.uriel.nixosModules.uriel-smoke ];
+services.uriel-smoke = {
+  enable = true;
+  environmentFile = /run/secrets/uriel-worker.env;
+  interval = "6h";
+};
+```
+
+On the macOS worker, keep the existing launchd service `KeepAlive = true`, set
+`ThrottleInterval` to at least 10 seconds, and schedule the same authenticated
+`POST /smoke` with a separate launchd calendar/interval job. Do not put the
+worker token in program arguments; load it from the worker environment file and
+pass the curl header through stdin/config. Roll out by restarting only the
+worker, checking public `/health`, authenticated `/ready` and `/status`, then
+triggering one manual smoke before enabling the schedule.
 
 On macOS, configure `URIEL_IOS_SIMULATOR_UDID` to select one simulator, or
 `URIEL_IOS_SIMULATOR_UDIDS` as a comma-separated pool for concurrent jobs.

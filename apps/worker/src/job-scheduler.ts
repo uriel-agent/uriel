@@ -42,6 +42,7 @@ export class JobScheduler {
   private draining = false;
   private readonly pending: PendingJob[] = [];
   private retryTimer?: NodeJS.Timeout;
+  private wakeRequested = false;
 
   constructor(
     private readonly maxConcurrentJobs: number,
@@ -71,6 +72,12 @@ export class JobScheduler {
     };
   }
 
+  wake(): void {
+    this.wakeRequested = true;
+    this.blocked = undefined;
+    this.drain();
+  }
+
   private drain(): void {
     if (this.draining) return;
     this.draining = true;
@@ -78,6 +85,10 @@ export class JobScheduler {
       .catch(this.onError)
       .finally(() => {
         this.draining = false;
+        if (this.wakeRequested) {
+          this.wakeRequested = false;
+          this.blocked = undefined;
+        }
         if (!this.blocked && this.active < this.maxConcurrentJobs && this.pending.length > 0) {
           this.drain();
         }
