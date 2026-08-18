@@ -14,6 +14,7 @@ import {
 } from "../../../packages/core/src/index.ts";
 import { loadConfig, type WorkerConfig } from "./config.ts";
 import { AndroidSlotPool } from "./android-slots.ts";
+import { androidAvdOwnershipErrors } from "./android-ownership.ts";
 import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
 import { JobScheduler } from "./job-scheduler.ts";
 import { JobReporter } from "./reporter.ts";
@@ -121,6 +122,16 @@ export async function handleRequest(
         writeJson(response, 403, { error: "Repository is not allowed by this worker." });
         return;
       }
+      if (requestsAndroidQa(validation.value.qa) && config.enableAndroidQa) {
+        const ownershipErrors = androidAvdOwnershipErrors(config);
+        if (ownershipErrors.length > 0) {
+          writeJson(response, 503, {
+            error: "Android QA is not ready because dedicated AVD ownership is invalid.",
+            reasons: ownershipErrors
+          });
+          return;
+        }
+      }
       const store = new LocalJobStore(config);
       const job = await store.putJob(createJob(validation.value));
       enqueueJob(job, config);
@@ -220,6 +231,10 @@ export async function handleRequest(
       error: error instanceof Error ? error.message : String(error)
     });
   }
+}
+
+function requestsAndroidQa(qa: CreateJobRequest["qa"]): boolean {
+  return qa === "android" || qa === "both" || qa === "all";
 }
 
 function enqueueJob(job: Job, config: WorkerConfig): void {

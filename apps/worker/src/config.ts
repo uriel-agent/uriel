@@ -1,6 +1,7 @@
 export interface WorkerConfig {
   androidAdbPath?: string;
   androidAvd?: string;
+  androidAvdPrefix: string;
   androidAvds: string[];
   androidApkUrl?: string;
   androidApkSha256?: string;
@@ -53,6 +54,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   return {
     androidAdbPath: env.URIEL_ANDROID_ADB_PATH?.trim() || undefined,
     androidAvd: androidAvds[0],
+    androidAvdPrefix: env.URIEL_ANDROID_AVD_PREFIX?.trim() || "uriel_",
     androidAvds,
     androidApkUrl: env.URIEL_ANDROID_APK_URL?.trim() || undefined,
     androidApkSha256: env.URIEL_ANDROID_APK_SHA256?.trim().toLowerCase() || undefined,

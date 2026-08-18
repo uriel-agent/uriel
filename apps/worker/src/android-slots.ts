@@ -9,22 +9,26 @@ type Slot = { avd?: string };
 /**
  * Assigns one Android target to one job for the whole job lifetime.
  *
- * An empty AVD list deliberately becomes one attached-device slot. This keeps
- * backwards compatibility while preventing concurrent jobs from sharing an
- * implicitly selected adb device.
+ * An empty AVD list has no capacity. Uriel never creates an implicit attached-
+ * device slot because that could bind a physical or interactive QA device.
  */
 export class AndroidSlotPool {
   private readonly available: Slot[];
+  private readonly slotCount: number;
   private readonly waiters: Waiter[] = [];
 
   constructor(avds: string[]) {
     const uniqueAvds = [...new Set(avds)];
-    this.available = uniqueAvds.length > 0
-      ? uniqueAvds.map((avd) => ({ avd }))
-      : [{}];
+    this.available = uniqueAvds.map((avd) => ({ avd }));
+    this.slotCount = this.available.length;
   }
 
   acquire(): Promise<AndroidSlotLease> {
+    if (this.slotCount === 0) {
+      return Promise.reject(
+        new Error("Android QA has no dedicated worker-owned AVD slots configured.")
+      );
+    }
     const slot = this.available.shift();
     if (slot) {
       return Promise.resolve(this.createLease(slot));

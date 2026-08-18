@@ -9,6 +9,10 @@ import {
   parseAdbDeviceSerials,
   resolveAndroidTools
 } from "./android-tooling.ts";
+import {
+  androidAvdOwnershipErrors,
+  isWorkerOwnedAndroidAvd
+} from "./android-ownership.ts";
 import type { WorkerConfig } from "./config.ts";
 import type { EvidenceRecorder } from "./evidence.ts";
 import type { JobReporter } from "./reporter.ts";
@@ -259,6 +263,25 @@ export async function ensureAndroidDevice(
   evidence?: EvidenceRecorder,
   requestedAvd: string | undefined = config.androidAvd
 ): Promise<string | undefined> {
+  const ownershipErrors = androidAvdOwnershipErrors(config);
+  if (ownershipErrors.length > 0) {
+    await reporter.event(
+      "qa",
+      "warn",
+      "Skipping Android QA because dedicated AVD ownership is invalid.",
+      { reasons: ownershipErrors }
+    );
+    return undefined;
+  }
+  if (!requestedAvd || !isWorkerOwnedAndroidAvd(config, requestedAvd)) {
+    await reporter.event(
+      "qa",
+      "warn",
+      "Skipping Android QA because no worker-owned AVD was exclusively leased."
+    );
+    return undefined;
+  }
+
   const tools = await resolveAndroidTools(config);
   if (!tools.adb) {
     await reporter.event("qa", "warn", "Skipping Android QA; adb is not executable.", {
@@ -271,90 +294,64 @@ export async function ensureAndroidDevice(
   await runObservedCommand(evidence, adbCommand, ["start-server"], { timeoutMs: 30_000 });
 
   let serial: string | undefined;
-  if (requestedAvd) {
-    await reporter.event("qa", "info", `Ensuring Android AVD ${requestedAvd} is booted.`);
-    serial = await serialForAvd(requestedAvd, adbCommand, evidence);
+  await reporter.event("qa", "info", `Ensuring Android AVD ${requestedAvd} is booted.`);
+  serial = await serialForAvd(requestedAvd, adbCommand, evidence);
+  if (!serial) {
+    const acceleration = tools.emulator
+      ? await checkAndroidEmulatorAcceleration(tools.emulator.command)
+      : undefined;
+    if (!tools.emulator || !acceleration?.ok) {
+      await reporter.event(
+        "qa",
+        "warn",
+        `Android AVD ${requestedAvd} is not attached and this host cannot boot it.`,
+        {
+          checked: tools.emulatorCandidates,
+          ...(acceleration ? { acceleration: acceleration.detail } : {})
+        }
+      );
+      return undefined;
+    }
+    const avd = quote(requestedAvd);
+    const emulator = quote(tools.emulator.command);
+    const launch = await runObservedCommand(evidence, "sh", [
+      "-lc",
+      `nohup ${emulator} -avd ${avd} -no-snapshot -no-audio -no-window >/tmp/uriel-emulator.log 2>&1 &`
+    ]);
+    if (launch.code !== 0) {
+      await reporter.event("qa", "warn", `Failed to start Android AVD ${requestedAvd}.`, {
+        stderr: launch.stderr.slice(-4000)
+      });
+      return undefined;
+    }
+  }
+  const deadline = Date.now() + config.androidBootTimeoutSeconds * 1_000;
+  let bootCompleted = false;
+  while (Date.now() < deadline) {
+    serial = serial ?? await serialForAvd(requestedAvd, adbCommand, evidence);
     if (!serial) {
-      const acceleration = tools.emulator
-        ? await checkAndroidEmulatorAcceleration(tools.emulator.command)
-        : undefined;
-      if (!tools.emulator || !acceleration?.ok) {
-        await reporter.event(
-          "qa",
-          "warn",
-          `Android AVD ${requestedAvd} is not attached and this host cannot boot it.`,
-          {
-            checked: tools.emulatorCandidates,
-            ...(acceleration ? { acceleration: acceleration.detail } : {})
-          }
-        );
-        return undefined;
-      }
-      const avd = quote(requestedAvd);
-      const emulator = quote(tools.emulator.command);
-      const launch = await runObservedCommand(evidence, "sh", [
-        "-lc",
-        `nohup ${emulator} -avd ${avd} -no-snapshot -no-audio -no-window >/tmp/uriel-emulator.log 2>&1 &`
-      ]);
-      if (launch.code !== 0) {
-        await reporter.event("qa", "warn", `Failed to start Android AVD ${requestedAvd}.`, {
-          stderr: launch.stderr.slice(-4000)
-        });
-        return undefined;
-      }
-    }
-    const deadline = Date.now() + config.androidBootTimeoutSeconds * 1_000;
-    let bootCompleted = false;
-    while (Date.now() < deadline) {
-      serial = serial ?? await serialForAvd(requestedAvd, adbCommand, evidence);
-      if (!serial) {
-        await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
-        continue;
-      }
-      const boot = await runObservedCommand(
-        evidence,
-        adbCommand,
-        ["-s", serial, "shell", "getprop", "sys.boot_completed"],
-        { timeoutMs: Math.max(1, Math.min(5_000, deadline - Date.now())) }
-      );
-      if (boot.code === 0 && boot.stdout.trim() === "1") {
-        bootCompleted = true;
-        break;
-      }
       await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
+      continue;
     }
-    if (!bootCompleted) {
-      await reporter.event(
-        "qa",
-        "warn",
-        `Skipping Android recording because AVD ${requestedAvd} did not finish booting within ${config.androidBootTimeoutSeconds} seconds.`
-      );
-      return undefined;
+    const boot = await runObservedCommand(
+      evidence,
+      adbCommand,
+      ["-s", serial, "shell", "getprop", "sys.boot_completed"],
+      { timeoutMs: Math.max(1, Math.min(5_000, deadline - Date.now())) }
+    );
+    if (boot.code === 0 && boot.stdout.trim() === "1") {
+      bootCompleted = true;
+      break;
     }
-  } else {
-    const devices = await attachedDeviceSerials(adbCommand, evidence);
-    const inheritedSerial = process.env.ANDROID_SERIAL?.trim();
-    if (inheritedSerial) {
-      if (!devices.includes(inheritedSerial)) {
-        await reporter.event(
-          "qa",
-          "warn",
-          `ANDROID_SERIAL=${inheritedSerial} is not an attached adb device.`
-        );
-        return undefined;
-      }
-      serial = inheritedSerial;
-    } else if (devices.length === 1) {
-      serial = devices[0];
-    } else if (devices.length > 1) {
-      await reporter.event(
-        "qa",
-        "warn",
-        "Skipping Android QA because multiple adb devices are attached and no AVD/ANDROID_SERIAL selected one.",
-        { devices }
-      );
-      return undefined;
-    }
+    await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
+  }
+  if (!bootCompleted) {
+    await reporter.event(
+      "qa",
+      "warn",
+      `Skipping Android recording because AVD ${requestedAvd} did not finish booting within ${config.androidBootTimeoutSeconds} seconds.`
+    );
+    return undefined;
   }
 
   if (!serial) {
@@ -366,7 +363,7 @@ export async function ensureAndroidDevice(
     return undefined;
   }
   await reporter.event("qa", "info", `Android QA bound to ${serial}.`, {
-    ...(requestedAvd ? { avd: requestedAvd } : {})
+    avd: requestedAvd
   });
   return serial;
 }

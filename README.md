@@ -216,6 +216,7 @@ Common variables:
 - `URIEL_BROWSER_URL`
 - `URIEL_ANDROID_AVD`
 - `URIEL_ANDROID_AVDS`
+- `URIEL_ANDROID_AVD_PREFIX` (defaults to `uriel_`)
 - `URIEL_ANDROID_ADB_PATH`
 - `URIEL_ANDROID_EMULATOR_PATH`
 - `URIEL_ANDROID_BOOT_TIMEOUT_SECONDS`
@@ -227,14 +228,38 @@ Common variables:
 - `URIEL_IOS_SIMULATOR_NAME`
 - `URIEL_IOS_BOOT_TIMEOUT_SECONDS`
 
-For safe concurrent Android QA, configure `URIEL_ANDROID_AVDS` with one AVD
-per slot. Uriel leases each AVD exclusively for a whole job and exports its
-resolved serial as `ANDROID_SERIAL` to the harness. The three APK variables
+For safe concurrent Android QA, configure `URIEL_ANDROID_AVDS` with one
+dedicated worker AVD per slot. Every name must start with
+`URIEL_ANDROID_AVD_PREFIX`; Uriel rejects `dungeonqa_pool_*`, physical devices,
+unconfigured emulators, and implicit attached-device selection. Uriel leases
+each AVD exclusively for a whole job and exports its resolved serial as
+`ANDROID_SERIAL` to the harness. The three APK variables
 form an optional all-or-nothing provisioner: Uriel downloads the pinned APK
 once, verifies its SHA-256, and ensures the configured package is installed on
 the leased device before the harness starts. `URIEL_ANDROID_APK_URL` may also
 be a `file://` URL when an operator maintains the signed APK on the worker
-host; the checksum is still verified before every install.
+host; the checksum is still verified before every install. Provisioning proves
+the serial-to-AVD ownership binding before package changes, cleanly reinstalls
+on version/signature conflicts, and clears application data before each job.
+
+### Migrating a macOS worker to dedicated AVDs
+
+1. Leave the launchd-managed worker running so `/health` remains available.
+2. In Android Studio Device Manager (or `avdmanager`), clone/create separate
+   devices named `uriel_dungeon_1` and `uriel_dungeon_2`. Do not rename or
+   delete the interactive `dungeonqa_pool_*` devices.
+3. Set `URIEL_ANDROID_AVD_PREFIX=uriel_` and
+   `URIEL_ANDROID_AVDS=uriel_dungeon_1,uriel_dungeon_2` in the worker's
+   environment file. Keep the pinned APK URL, SHA-256, and package together.
+4. Restart only the worker service. Confirm `/health` remains `200`, then call
+   authenticated `/ready`; it must name both dedicated AVDs and report
+   `android.avd.ownership` as `pass` before submitting Android work.
+5. Submit one Android smoke job. Confirm its events show the worker-owned AVD,
+   package SHA-256, provisioning reason, and `pm-clear` isolation action.
+
+Rollback is configuration-only: stop new Android submissions, restore the
+previous environment file, and restart the worker. Uriel will refuse the old
+interactive AVD names, but the control plane and non-Android jobs remain online.
 
 `GET /health` is a cheap liveness check and remains available without worker
 authentication. `GET /ready` verifies Android tool executability, adb
