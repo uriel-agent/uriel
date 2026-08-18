@@ -6,7 +6,11 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
-import { resolveAndroidTools } from "./android-tooling.ts";
+import { listAttachedAndroidAvds, resolveAndroidTools } from "./android-tooling.ts";
+import {
+  androidAvdOwnershipErrors,
+  isWorkerOwnedAndroidAvd
+} from "./android-ownership.ts";
 import type { WorkerConfig } from "./config.ts";
 import type { EvidenceRecorder } from "./evidence.ts";
 import type { JobReporter } from "./reporter.ts";
@@ -51,7 +55,8 @@ export async function provisionAndroidApp(
   config: WorkerConfig,
   serial: string,
   reporter: JobReporter,
-  evidence?: EvidenceRecorder
+  evidence?: EvidenceRecorder,
+  requestedAvd: string | undefined = config.androidAvd
 ): Promise<void> {
   const provisioning = configuredAndroidProvisioning(config);
   if (!provisioning) return;
@@ -59,6 +64,18 @@ export async function provisionAndroidApp(
   if (!adb) {
     throw new Error("Cannot provision the Android QA package because adb is not executable.");
   }
+  const avd = await verifyWorkerOwnedProvisioningTarget(
+    config,
+    adb.command,
+    serial,
+    requestedAvd
+  );
+  await reporter.event(
+    "qa",
+    "info",
+    `Verified worker-owned Android provisioning target ${avd}.`,
+    { avd, serial }
+  );
 
   const cacheDir = join(config.stateDir, "android-apks");
   const deviceDir = join(config.stateDir, "android-devices", safePathSegment(serial));
@@ -70,53 +87,195 @@ export async function provisionAndroidApp(
     evidence
   );
   const recordedState = await readRecordedPackageState(markerPath);
+  const installReason = !installedState
+    ? "package-missing"
+    : recordedState !== installedState
+      ? "package-state-mismatch"
+      : undefined;
   if (installedState && recordedState === installedState) {
     await reporter.event(
       "qa",
       "info",
       `Verified ${provisioning.packageName} is already provisioned on ${serial}.`,
-      { sha256: provisioning.sha256 }
+      {
+        avd,
+        packageName: provisioning.packageName,
+        sha256: provisioning.sha256,
+        versionCode: packageVersionCode(installedState)
+      }
     );
-    return;
+  } else {
+    const apkPath = await cachedApk(provisioning, cacheDir, reporter);
+    await reporter.event(
+      "qa",
+      "info",
+      `Installing configured Android QA package on ${serial}.`,
+      {
+        avd,
+        installedVersionCode: packageVersionCode(installedState),
+        packageName: provisioning.packageName,
+        reason: installReason ?? "package-state-mismatch",
+        sha256: provisioning.sha256
+      }
+    );
+    let install = await runObservedCommand(
+      evidence,
+      adb.command,
+      ["-s", serial, "install", "-r", apkPath],
+      { timeoutMs: 10 * 60_000 }
+    );
+    if (install.code !== 0) {
+      const installOutput = `${install.stderr}\n${install.stdout}`.trim();
+      const reinstallReason = androidReinstallReason(installOutput);
+      if (!reinstallReason) {
+        throw new Error(
+          `Failed to install Android QA package on ${serial}: ${installOutput}`
+        );
+      }
+      await reporter.event(
+        "qa",
+        "warn",
+        `Reconciling ${provisioning.packageName} with a clean reinstall on ${avd}.`,
+        {
+          action: "uninstall-reinstall",
+          avd,
+          installedVersionCode: packageVersionCode(installedState),
+          packageName: provisioning.packageName,
+          reason: reinstallReason,
+          sha256: provisioning.sha256
+        }
+      );
+      const uninstall = await runObservedCommand(
+        evidence,
+        adb.command,
+        ["-s", serial, "uninstall", provisioning.packageName],
+        { timeoutMs: 2 * 60_000 }
+      );
+      if (uninstall.code !== 0) {
+        throw new Error(
+          `Failed to remove mismatched Android QA package from ${avd}: ${(uninstall.stderr || uninstall.stdout).trim()}`
+        );
+      }
+      install = await runObservedCommand(
+        evidence,
+        adb.command,
+        ["-s", serial, "install", apkPath],
+        { timeoutMs: 10 * 60_000 }
+      );
+      if (install.code !== 0) {
+        throw new Error(
+          `Clean Android QA package install failed on ${avd}: ${(install.stderr || install.stdout).trim()}`
+        );
+      }
+    }
+
+    const provisionedState = await adbPackageState(
+      adb.command,
+      serial,
+      provisioning.packageName,
+      evidence
+    );
+    if (!provisionedState) {
+      throw new Error(
+        `APK install succeeded but ${provisioning.packageName} is not installed on ${serial}.`
+      );
+    }
+    await mkdir(deviceDir, { recursive: true });
+    await writeFile(markerPath, `${JSON.stringify({
+      avd,
+      installedAt: new Date().toISOString(),
+      packageName: provisioning.packageName,
+      packageState: provisionedState,
+      serial,
+      sha256: provisioning.sha256
+    })}\n`);
+    await reporter.event(
+      "qa",
+      "info",
+      `Provisioned ${provisioning.packageName} on ${avd}.`,
+      {
+        avd,
+        packageName: provisioning.packageName,
+        reason: installReason ?? "package-state-mismatch",
+        sha256: provisioning.sha256,
+        versionCode: packageVersionCode(provisionedState)
+      }
+    );
   }
 
-  const apkPath = await cachedApk(provisioning, cacheDir, reporter);
+  const reset = await runObservedCommand(
+    evidence,
+    adb.command,
+    ["-s", serial, "shell", "pm", "clear", provisioning.packageName],
+    { timeoutMs: 60_000 }
+  );
+  if (reset.code !== 0 || !reset.stdout.includes("Success")) {
+    throw new Error(
+      `Failed to reset ${provisioning.packageName} app data on ${avd}: ${(reset.stderr || reset.stdout).trim()}`
+    );
+  }
   await reporter.event(
     "qa",
     "info",
-    `Installing configured Android QA package on ${serial}.`,
-    { packageName: provisioning.packageName, sha256: provisioning.sha256 }
+    `Reset ${provisioning.packageName} app data for an isolated job.`,
+    {
+      action: "pm-clear",
+      avd,
+      packageName: provisioning.packageName,
+      sha256: provisioning.sha256
+    }
   );
-  const install = await runObservedCommand(
-    evidence,
-    adb.command,
-    ["-s", serial, "install", "-r", apkPath],
-    { timeoutMs: 10 * 60_000 }
-  );
-  if (install.code !== 0) {
+}
+
+async function verifyWorkerOwnedProvisioningTarget(
+  config: WorkerConfig,
+  adbCommand: string,
+  serial: string,
+  requestedAvd: string | undefined
+): Promise<string> {
+  const ownershipErrors = androidAvdOwnershipErrors(config);
+  if (ownershipErrors.length > 0) {
+    throw new Error(`Refusing Android provisioning: ${ownershipErrors.join(" ")}`);
+  }
+  if (!requestedAvd || !isWorkerOwnedAndroidAvd(config, requestedAvd)) {
     throw new Error(
-      `Failed to install Android QA package on ${serial}: ${(install.stderr || install.stdout).trim()}`
+      "Refusing Android provisioning without an exclusively leased worker-owned AVD."
     );
   }
-  const provisionedState = await adbPackageState(
-    adb.command,
-    serial,
-    provisioning.packageName,
-    evidence
-  );
-  if (!provisionedState) {
+
+  const attached = await listAttachedAndroidAvds(adbCommand);
+  if (attached.error) {
+    throw new Error(`Cannot verify Android provisioning target: ${attached.error}`);
+  }
+  const binding = attached.avds.find((candidate) => candidate.serial === serial);
+  if (!binding) {
     throw new Error(
-      `APK install succeeded but ${provisioning.packageName} is not installed on ${serial}.`
+      `Refusing Android provisioning on ${serial}; it is not a named emulator AVD and may be a physical device.`
     );
   }
-  await mkdir(deviceDir, { recursive: true });
-  await writeFile(markerPath, `${JSON.stringify({
-    installedAt: new Date().toISOString(),
-    packageName: provisioning.packageName,
-    packageState: provisionedState,
-    serial,
-    sha256: provisioning.sha256
-  })}\n`);
+  if (binding.avd !== requestedAvd || !isWorkerOwnedAndroidAvd(config, binding.avd)) {
+    throw new Error(
+      `Refusing Android provisioning on ${serial}; expected worker AVD ${requestedAvd}, received ${binding.avd}.`
+    );
+  }
+  return binding.avd;
+}
+
+export function androidReinstallReason(output: string): string | undefined {
+  if (/INSTALL_FAILED_VERSION_DOWNGRADE|downgrade detected|version code .*older/iu.test(output)) {
+    return "version-downgrade";
+  }
+  if (
+    /INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures? do not match|inconsistent certificates/iu
+      .test(output)
+  ) {
+    return "signature-mismatch";
+  }
+  return undefined;
+}
+
+function packageVersionCode(packageState: string | undefined): string | null {
+  return packageState ? /^versionCode=(\d+)/mu.exec(packageState)?.[1] ?? null : null;
 }
 
 async function cachedApk(

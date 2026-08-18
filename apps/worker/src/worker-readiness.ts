@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { configuredAndroidProvisioning } from "./android-provisioning.ts";
+import { androidAvdOwnershipErrors } from "./android-ownership.ts";
 import {
   checkAndroidEmulatorAcceleration,
   listAttachedAndroidAvds,
@@ -43,6 +44,18 @@ export async function checkWorkerReadiness(config: WorkerConfig): Promise<Worker
     status: "pass"
   });
 
+  const ownershipErrors = androidAvdOwnershipErrors(config);
+  checks.push({
+    detail: ownershipErrors.length === 0
+      ? `All configured AVDs use the worker-owned ${config.androidAvdPrefix} prefix.`
+      : ownershipErrors.join(" "),
+    id: "android.avd.ownership",
+    remediation: ownershipErrors.length === 0
+      ? undefined
+      : "Configure dedicated Uriel AVDs and set URIEL_ANDROID_AVDS without interactive or physical targets.",
+    status: ownershipErrors.length === 0 ? "pass" : "fail"
+  });
+
   const tools = await resolveAndroidTools(config);
   if (!tools.adb) {
     checks.push(missingToolCheck("adb", tools.adbCandidates, "URIEL_ANDROID_ADB_PATH"));
@@ -72,7 +85,7 @@ export async function checkWorkerReadiness(config: WorkerConfig): Promise<Worker
     status: "pass"
   });
 
-  await checkAvds(config, tools, attached.avds, attached.devices, checks);
+  await checkAvds(config, tools, attached.avds, checks);
   await checkProvisioning(config, checks);
   return finish(checks);
 }
@@ -81,24 +94,9 @@ async function checkAvds(
   config: WorkerConfig,
   tools: AndroidToolResolution,
   attachedAvds: Array<{ avd: string; serial: string }>,
-  devices: string[],
   checks: ReadinessCheck[]
 ): Promise<void> {
   if (config.androidAvds.length === 0) {
-    const inheritedSerial = process.env.ANDROID_SERIAL?.trim();
-    const selected = inheritedSerial ? devices.includes(inheritedSerial) : devices.length === 1;
-    checks.push({
-      detail: selected
-        ? `Using attached device ${inheritedSerial ?? devices[0]}.`
-        : devices.length === 0
-          ? "No AVD is configured and no adb device is attached."
-          : "Multiple adb devices are attached without URIEL_ANDROID_AVDS or ANDROID_SERIAL selecting one.",
-      id: "android.device.selection",
-      remediation: selected
-        ? undefined
-        : "Configure URIEL_ANDROID_AVDS with dedicated worker AVDs or select one device with ANDROID_SERIAL.",
-      status: selected ? "pass" : "fail"
-    });
     return;
   }
 

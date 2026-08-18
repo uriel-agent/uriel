@@ -75,7 +75,13 @@ export async function runJob(
         throw new Error("Android APK provisioning is configured, but no exclusive Android device is available.");
       }
       if (androidSerial) {
-        await provisionAndroidApp(config, androidSerial, reporter, evidence);
+        await provisionAndroidApp(
+          config,
+          androidSerial,
+          reporter,
+          evidence,
+          runtime.androidAvd ?? config.androidAvd
+        );
         if (shouldCaptureGenericAndroidQa(job)) {
           const adb = (await resolveAndroidTools(config)).adb;
           if (!adb) {

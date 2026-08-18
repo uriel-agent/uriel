@@ -168,9 +168,19 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = ''
-        Android AVD names used as exclusive per-job slots. When empty, the
-        worker permits one Android job at a time against an explicitly attached
-        device. androidAvd remains a backwards-compatible single-slot fallback.
+        Dedicated worker-owned Android AVD names used as exclusive per-job
+        slots. Names must start with androidAvdPrefix. An empty list has no
+        Android capacity; physical and implicitly attached devices are never
+        selected. androidAvd remains a deprecated single-slot fallback.
+      '';
+    };
+
+    androidAvdPrefix = lib.mkOption {
+      type = lib.types.strMatching "^[A-Za-z][A-Za-z0-9._-]*$";
+      default = "uriel_";
+      description = ''
+        Ownership prefix required on every AVD leased or modified by Uriel.
+        Interactive developer pools must use a different prefix.
       '';
     };
 
@@ -271,6 +281,7 @@ in
       path = runtimePath;
       environment = {
         URIEL_ANDROID_BOOT_TIMEOUT_SECONDS = toString cfg.androidBootTimeoutSeconds;
+        URIEL_ANDROID_AVD_PREFIX = cfg.androidAvdPrefix;
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;

@@ -82,6 +82,29 @@ describe("POST /jobs/:id/cancel", () => {
   });
 });
 
+describe("POST /jobs Android ownership gate", () => {
+  it("rejects an Android job before persistence when no dedicated AVD is configured", async () => {
+    const { baseUrl, store } = await startWorker();
+
+    const response = await fetch(`${baseUrl}/jobs`, {
+      body: JSON.stringify({
+        prompt: "Run Android QA",
+        qa: "android",
+        repo: "https://github.com/uriel-agent/uriel.git"
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: expect.stringContaining("dedicated AVD ownership"),
+      reasons: expect.arrayContaining([expect.stringContaining("requires at least one")])
+    });
+    expect(await store.listJobs()).toEqual([]);
+  });
+});
+
 async function startWorker(): Promise<{
   baseUrl: string;
   store: LocalJobStore;

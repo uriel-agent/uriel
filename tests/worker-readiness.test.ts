@@ -132,7 +132,7 @@ describe("worker readiness", () => {
 
     expect(response.status).toBe(503);
     expect(body.checks).toContainEqual(expect.objectContaining({
-      detail: expect.stringContaining("qa-1"),
+      detail: expect.stringContaining("uriel_qa_1"),
       id: "android.avds",
       status: "fail"
     }));
@@ -195,7 +195,7 @@ async function readyConfig(
   exit 0
 fi
 if [ "\${1:-}" = "-s" ] && [ "\${3:-}" = "emu" ]; then
-  echo qa-1
+  echo uriel_qa_1
   echo OK
   exit 0
 fi
@@ -205,7 +205,7 @@ exit 1`
     ? join(root, "bin", "missing-emulator")
     : await executable(
       join(root, "bin", "emulator"),
-      `if [ "\${1:-}" = "-list-avds" ]; then echo ${options.listedAvd ?? "qa-1"}; exit 0; fi
+      `if [ "\${1:-}" = "-list-avds" ]; then echo ${options.listedAvd ?? "uriel_qa_1"}; exit 0; fi
 if [ "\${1:-}" = "-accel-check" ]; then
   ${options.acceleration === false ? 'echo "acceleration unavailable" >&2\n  exit 1' : 'echo "accel: usable"\n  exit 0'}
 fi
@@ -215,7 +215,7 @@ exit 1`
     HOME: root,
     PATH: "",
     URIEL_ANDROID_ADB_PATH: adb,
-    URIEL_ANDROID_AVDS: "qa-1",
+    URIEL_ANDROID_AVDS: "uriel_qa_1",
     URIEL_ANDROID_EMULATOR_PATH: emulator,
     URIEL_STATE_DIR: root,
     URIEL_WORKER_TOKEN: "test-token"
