@@ -36,8 +36,8 @@ export class JobReporter {
     await this.store.appendEvent(this.jobId, event);
   }
 
-  async status(status: JobStatus): Promise<void> {
-    await this.store.setStatus(this.jobId, status);
+  async status(status: JobStatus): Promise<Job | undefined> {
+    return this.store.setStatus(this.jobId, status);
   }
 
   async getJob(): Promise<Job | undefined> {

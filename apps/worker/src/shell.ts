@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const commandAbortContext = new AsyncLocalStorage<AbortSignal | null>();
 
 export interface CommandResult {
   code: number;
@@ -15,7 +18,19 @@ export interface RunCommandOptions {
   input?: string;
   onSpawn?: (pid: number) => Promise<void> | void;
   processGroup?: boolean;
+  signal?: AbortSignal;
   timeoutMs?: number;
+}
+
+export async function withCommandAbortSignal<T>(
+  signal: AbortSignal | undefined,
+  operation: () => Promise<T>
+): Promise<T> {
+  return signal ? commandAbortContext.run(signal, operation) : operation();
+}
+
+export async function withoutCommandAbortSignal<T>(operation: () => Promise<T>): Promise<T> {
+  return commandAbortContext.run(null, operation);
 }
 
 export async function runCommand(
@@ -25,8 +40,14 @@ export async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    const contextualSignal = commandAbortContext.getStore();
+    const abortSignal = options.signal ?? (contextualSignal === null ? undefined : contextualSignal);
+    if (abortSignal?.aborted) {
+      resolve({ code: 130, durationMs: 0, stderr: "", stdout: "" });
+      return;
+    }
     const processGroup = process.platform !== "win32" &&
-      (Boolean(options.processGroup) || options.timeoutMs !== undefined);
+      (Boolean(options.processGroup) || options.timeoutMs !== undefined || abortSignal !== undefined);
     const child = spawn(command, args, {
       cwd: options.cwd,
       detached: processGroup,
@@ -40,7 +61,7 @@ export async function runCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let timedOut = false;
+    let terminationCode: number | undefined;
     let timeout: NodeJS.Timeout | undefined;
     let forceKill: NodeJS.Timeout | undefined;
     let forceSettle: NodeJS.Timeout | undefined;
@@ -50,6 +71,7 @@ export async function runCommand(
       if (timeout) clearTimeout(timeout);
       if (forceKill) clearTimeout(forceKill);
       if (forceSettle) clearTimeout(forceSettle);
+      abortSignal?.removeEventListener("abort", abort);
       void spawnRegistration.then(
         () => error
           ? reject(error)
@@ -57,24 +79,30 @@ export async function runCommand(
         reject
       );
     };
+    const terminate = (code: number): void => {
+      if (settled || terminationCode !== undefined) return;
+      terminationCode = code;
+      killChild(child, processGroup, "SIGTERM");
+      forceKill = setTimeout(() => {
+        killChild(child, processGroup, "SIGKILL");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, 1000);
+      forceKill.unref();
+      forceSettle = setTimeout(() => {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+        settle(code);
+      }, 1500);
+      forceSettle.unref();
+    };
+    const abort = (): void => terminate(130);
+    abortSignal?.addEventListener("abort", abort, { once: true });
     timeout = options.timeoutMs
       ? setTimeout(() => {
-          timedOut = true;
-          killChild(child, processGroup, "SIGTERM");
-          forceKill = setTimeout(() => {
-            killChild(child, processGroup, "SIGKILL");
-            child.stdout.destroy();
-            child.stderr.destroy();
-          }, 1000);
-          forceKill.unref();
-          forceSettle = setTimeout(() => {
-            child.stdin.destroy();
-            child.stdout.destroy();
-            child.stderr.destroy();
-            child.unref();
-            settle(124);
-          }, 1500);
-          forceSettle.unref();
+          terminate(124);
         }, options.timeoutMs)
       : undefined;
 
@@ -90,7 +118,7 @@ export async function runCommand(
       settle(1, error);
     });
     child.on("close", (code) => {
-      settle(timedOut ? 124 : code ?? 1);
+      settle(terminationCode ?? code ?? 1);
     });
     if (options.input) {
       child.stdin.write(options.input);

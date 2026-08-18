@@ -39,19 +39,32 @@ import {
   exists,
   runCommand,
   type CommandResult,
-  type RunCommandOptions
+  type RunCommandOptions,
+  withCommandAbortSignal,
+  withoutCommandAbortSignal
 } from "./shell.ts";
 import { LocalJobStore } from "./store.ts";
+
+interface JobRuntime {
+  androidAvd?: string;
+  capacityGate?: () => Promise<HostCapacityDecision>;
+  cleanup?: CleanupSupervisor;
+  iosSimulatorUdid?: string;
+  signal?: AbortSignal;
+}
 
 export async function runJob(
   job: Job,
   config: WorkerConfig,
-  runtime: {
-    androidAvd?: string;
-    capacityGate?: () => Promise<HostCapacityDecision>;
-    cleanup?: CleanupSupervisor;
-    iosSimulatorUdid?: string;
-  } = {}
+  runtime: JobRuntime = {}
+): Promise<void> {
+  return withCommandAbortSignal(runtime.signal, () => runJobInternal(job, config, runtime));
+}
+
+async function runJobInternal(
+  job: Job,
+  config: WorkerConfig,
+  runtime: JobRuntime
 ): Promise<void> {
   const store = new LocalJobStore(config);
   const reporter = new JobReporter({
@@ -66,7 +79,9 @@ export async function runJob(
   let cleanupDone = false;
   const cleanupResources = async (): Promise<boolean> => {
     try {
-      const actions = await cleanup.cleanupJob(job.id, terminalReason);
+      const actions = await withoutCommandAbortSignal(() =>
+        cleanup.cleanupJob(job.id, terminalReason)
+      );
       await reporter.event("worker", "info", `Cleanup completed after ${terminalReason}.`, {
         actions: JSON.parse(JSON.stringify(actions)) as JsonValue
       });
@@ -82,18 +97,24 @@ export async function runJob(
   };
 
   try {
+    await assertJobActive(store, job.id, runtime.signal);
     await mkdir(artifactsDir, { recursive: true });
     await ledger.record(job.id, "artifacts", "artifacts", { path: artifactsDir });
-    await reporter.status("running");
+    const running = await reporter.status("running");
+    if (running?.status !== "running") throw new Error("Job cancellation requested.");
     await reporter.event("job", "info", `Starting job ${job.id}.`);
+    await assertJobActive(store, job.id, runtime.signal);
 
     const worktree = await prepareWorktree(job, config, reporter, evidence, ledger);
+    await assertJobActive(store, job.id, runtime.signal);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
+    await assertJobActive(store, job.id, runtime.signal);
     await runProfileSetup(job, config, worktree, reporter, evidence);
+    await assertJobActive(store, job.id, runtime.signal);
     let androidSerial: string | undefined;
     if ((job.qa === "android" || job.qa === "both" || job.qa === "all") && config.enableAndroidQa) {
       try {
-        await waitForHostCapacity("Android emulator allocation", config, reporter, runtime);
+        await waitForHostCapacity("Android emulator allocation", config, reporter, runtime, runtime.signal);
         androidSerial = await ensureAndroidDevice(
           config,
           reporter,
@@ -107,12 +128,14 @@ export async function runJob(
           }
         );
       } catch (error) {
+        await assertJobActive(store, job.id, runtime.signal);
         await reporter.event(
           "qa",
           "warn",
           `Android device preflight failed: ${errorMessage(error)}`
         );
       }
+      await assertJobActive(store, job.id, runtime.signal);
       if (!androidSerial && configuredAndroidProvisioning(config)) {
         throw new Error("Android APK provisioning is configured, but no exclusive Android device is available.");
       }
@@ -124,6 +147,7 @@ export async function runJob(
           evidence,
           runtime.androidAvd ?? config.androidAvd
         );
+        await assertJobActive(store, job.id, runtime.signal);
         if (config.androidAppPackage) {
           await ledger.record(job.id, "package-marker", "package-marker", {
             packageName: config.androidAppPackage,
@@ -164,7 +188,8 @@ export async function runJob(
     let harnessError: unknown;
     let harnessFailed = false;
     try {
-      await waitForHostCapacity("coding harness launch", config, reporter, runtime);
+      await waitForHostCapacity("coding harness launch", config, reporter, runtime, runtime.signal);
+      await assertJobActive(store, job.id, runtime.signal);
       await runHarness(
         job,
         config,
@@ -179,6 +204,7 @@ export async function runJob(
       harnessError = error;
       harnessFailed = true;
     }
+    await assertJobActive(store, job.id, runtime.signal);
     await collectAgentArtifacts(job, artifactsDir, store, reporter);
     if (job.checks?.length) {
       await collectCheckResults(job, artifactsDir, store, reporter);
@@ -186,7 +212,8 @@ export async function runJob(
     if (harnessFailed) {
       throw harnessError;
     }
-    await waitForHostCapacity("QA process launch", config, reporter, runtime);
+    await waitForHostCapacity("QA process launch", config, reporter, runtime, runtime.signal);
+    await assertJobActive(store, job.id, runtime.signal);
     const qaSummaries = await runQa(
       job,
       config,
@@ -199,9 +226,12 @@ export async function runJob(
     for (const summary of qaSummaries) {
       evidence.recordQaSummary(summary);
     }
+    await assertJobActive(store, job.id, runtime.signal);
     await finalizePullRequest(job, worktree, artifactsDir, store, reporter, evidence);
+    await assertJobActive(store, job.id, runtime.signal);
 
-    await reporter.status("completed");
+    const completed = await reporter.status("completed");
+    if (completed?.status !== "completed") throw new Error("Job cancellation requested.");
     terminalReason = "job completed";
     await writeEvidenceManifest(evidence, job, store, reporter, "Job completed.");
     cleanupDone = await cleanupResources();
@@ -226,12 +256,15 @@ async function waitForHostCapacity(
   operation: string,
   config: WorkerConfig,
   reporter: JobReporter,
-  runtime: { capacityGate?: () => Promise<HostCapacityDecision> }
+  runtime: JobRuntime,
+  signal?: AbortSignal
 ): Promise<void> {
   if (!runtime.capacityGate) return;
   let lastReason: string | undefined;
   while (true) {
+    if (signal?.aborted) throw new Error("Job cancellation requested.");
     const decision = await runtime.capacityGate();
+    if (signal?.aborted) throw new Error("Job cancellation requested.");
     if (decision.admitted) {
       if (lastReason) {
         await reporter.event("worker", "info", `Host capacity recovered before ${operation}.`, {
@@ -249,7 +282,19 @@ async function waitForHostCapacity(
       });
       lastReason = reason;
     }
-    await delay(config.capacityRetrySeconds * 1_000);
+    await delay(config.capacityRetrySeconds * 1_000, signal);
+  }
+}
+
+async function assertJobActive(
+  store: LocalJobStore,
+  jobId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  if (signal?.aborted) throw new Error("Job cancellation requested.");
+  const current = await store.getJob(jobId);
+  if (!current || current.status === "cancelled" || signal?.aborted) {
+    throw new Error("Job cancellation requested.");
   }
 }
 
@@ -822,8 +867,20 @@ async function callbackEvent(
   }
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  if (signal.aborted) return Promise.reject(new Error("Job cancellation requested."));
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    const abort = (): void => {
+      clearTimeout(timeout);
+      reject(new Error("Job cancellation requested."));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function buildPullRequestBody(job: Job): string {

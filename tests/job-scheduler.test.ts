@@ -14,12 +14,33 @@ describe("JobScheduler", () => {
     scheduler.enqueue("first", () => first);
     scheduler.enqueue("second", secondRun);
 
-    expect(scheduler.cancel("second")).toBe(true);
+    expect(scheduler.cancel("second")).toBe("queued");
     expect(scheduler.cancel("second")).toBe(false);
     finishFirst?.();
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(secondRun).not.toHaveBeenCalled();
+  });
+
+  it("aborts a job that has dequeued and releases its active slot", async () => {
+    let observedAbort = false;
+    const scheduler = new JobScheduler(1);
+    scheduler.enqueue("active", async (signal) => {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          observedAbort = true;
+          resolve();
+        }, { once: true });
+      });
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(scheduler.cancel("active")).toBe("active");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(observedAbort).toBe(true);
+    expect(scheduler.state()).toMatchObject({ activeJobs: 0, queuedJobs: 0 });
+    expect(scheduler.cancel("active")).toBe(false);
   });
 
   it("continues draining after a job failure", async () => {
