@@ -661,12 +661,15 @@ async function runCommandUntilInterrupt(
     let settled = false;
     let interrupted = false;
     let forceKill: ReturnType<typeof setTimeout> | undefined;
+    // Give the recorder time to install its signal handlers before starting the
+    // requested capture window. This also avoids producing corrupt output when
+    // the host is busy starting several QA subprocesses at once.
     const interrupt = setTimeout(() => {
       interrupted = child.kill("SIGINT");
       if (interrupted) {
         forceKill = setTimeout(() => child.kill("SIGKILL"), 10_000);
       }
-    }, interruptAfterMs);
+    }, interruptAfterMs + 500);
 
     const finish = (code: number): void => {
       if (settled) return;

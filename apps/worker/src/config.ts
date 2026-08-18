@@ -47,7 +47,11 @@ export interface WorkerConfig {
   reposDir: string;
   ledgerRetentionDays: number;
   stateDir: string;
+  smokeHistoryLimit: number;
   workerToken?: string;
+  watchdogCooldownSeconds: number;
+  watchdogFailureThreshold: number;
+  watchdogIntervalSeconds: number;
   worktreesDir: string;
 }
 
@@ -125,7 +129,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     reposDir: env.URIEL_REPOS_DIR ?? `${stateDir}/repos`,
     ledgerRetentionDays: positiveInteger(env.URIEL_LEDGER_RETENTION_DAYS, 30),
     stateDir,
+    smokeHistoryLimit: positiveInteger(env.URIEL_SMOKE_HISTORY_LIMIT, 50),
     workerToken: env.URIEL_WORKER_TOKEN,
+    watchdogCooldownSeconds: positiveInteger(env.URIEL_WATCHDOG_COOLDOWN_SECONDS, 300),
+    watchdogFailureThreshold: positiveInteger(env.URIEL_WATCHDOG_FAILURE_THRESHOLD, 3),
+    watchdogIntervalSeconds: positiveInteger(env.URIEL_WATCHDOG_INTERVAL_SECONDS, 30),
     worktreesDir: env.URIEL_WORKTREES_DIR ?? `${stateDir}/worktrees`
   };
 }

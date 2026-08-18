@@ -108,6 +108,32 @@ describe("worker readiness", () => {
     expect(await ready.json()).toMatchObject({ ok: true, status: "ready" });
   });
 
+  it("returns authenticated secret-free operational telemetry", async () => {
+    const config = await readyConfig();
+    config.androidApkUrl = "https://secret.example.test/signed.apk?token=do-not-leak";
+    config.androidApkSha256 = "b".repeat(64);
+    config.androidAppPackage = "com.example.qa";
+    const baseUrl = await startWorker(config);
+
+    expect((await fetch(`${baseUrl}/status`)).status).toBe(401);
+    const response = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+    const body = await response.json() as Record<string, unknown>;
+    const serialized = JSON.stringify(body);
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      android: { leased: 0, total: 1 },
+      provisioning: { configured: true, packageName: "com.example.qa" },
+      queue: { activeJobs: 0, queuedJobs: 0 },
+      service: "uriel-worker"
+    });
+    expect(serialized).not.toContain("do-not-leak");
+    expect(serialized).not.toContain("b".repeat(64));
+    expect(serialized).not.toContain("test-token");
+  });
+
   it("stays usable but reports degraded when every configured AVD is attached and cold boot is unavailable", async () => {
     const config = await readyConfig({ brokenEmulator: true });
     const baseUrl = await startWorker(config);

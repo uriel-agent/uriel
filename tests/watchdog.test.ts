@@ -1,0 +1,85 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { ReadinessWatchdog, type WatchdogProbe } from "../apps/worker/src/watchdog.ts";
+
+describe("ReadinessWatchdog", () => {
+  it("recovers only after a sustained actionable failure and alerts if it persists", async () => {
+    const probe: WatchdogProbe = {
+      actionable: true,
+      causes: ["android.adb.responsive: adb unavailable"],
+      status: "not-ready"
+    };
+    const recover = vi.fn(async () => undefined);
+    const alert = vi.fn(async () => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert,
+      cooldownMs: 10_000,
+      intervalMs: 1_000,
+      probe: async () => probe,
+      recover,
+      threshold: 3
+    });
+
+    await watchdog.tick(1_000);
+    await watchdog.tick(2_000);
+    expect(recover).not.toHaveBeenCalled();
+    await watchdog.tick(3_000);
+
+    expect(recover).toHaveBeenCalledOnce();
+    expect(alert).toHaveBeenCalledWith(probe);
+    expect(watchdog.snapshot()).toMatchObject({
+      consecutiveDegraded: 3,
+      lastStatus: "not-ready"
+    });
+
+    await watchdog.tick(4_000);
+    expect(recover).toHaveBeenCalledOnce();
+    await watchdog.tick(14_000);
+    expect(recover).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not recover while degradation is non-actionable", async () => {
+    const recover = vi.fn(async () => undefined);
+    const alert = vi.fn(async () => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert,
+      cooldownMs: 1,
+      intervalMs: 1_000,
+      probe: async () => ({
+        actionable: false,
+        causes: ["real job active"],
+        status: "degraded"
+      }),
+      recover,
+      threshold: 1
+    });
+
+    await watchdog.tick(10);
+
+    expect(recover).not.toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
+  });
+
+  it("clears the failure streak when bounded recovery restores readiness", async () => {
+    let recovered = false;
+    const alert = vi.fn(async () => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert,
+      cooldownMs: 1,
+      intervalMs: 1_000,
+      probe: async () => recovered
+        ? { actionable: true, causes: [], status: "ready" }
+        : { actionable: true, causes: ["disk"], status: "not-ready" },
+      recover: async () => { recovered = true; },
+      threshold: 1
+    });
+
+    await watchdog.tick(10);
+
+    expect(alert).not.toHaveBeenCalled();
+    expect(watchdog.snapshot()).toMatchObject({
+      consecutiveDegraded: 0,
+      lastStatus: "ready"
+    });
+  });
+});

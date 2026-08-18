@@ -3,6 +3,13 @@ export interface AndroidSlotLease {
   release(): void;
 }
 
+export interface AndroidSlotState {
+  available: number;
+  leased: number;
+  total: number;
+  waiting: number;
+}
+
 type Waiter = (lease: AndroidSlotLease) => void;
 type Slot = { avd?: string };
 
@@ -37,6 +44,15 @@ export class AndroidSlotPool {
     return new Promise((resolve) => {
       this.waiters.push(resolve);
     });
+  }
+
+  state(): AndroidSlotState {
+    return {
+      available: this.available.length,
+      leased: this.slotCount - this.available.length,
+      total: this.slotCount,
+      waiting: this.waiters.length
+    };
   }
 
   private createLease(slot: Slot): AndroidSlotLease {

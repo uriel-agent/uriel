@@ -116,6 +116,32 @@ describe("JobScheduler", () => {
     }));
     expect(run).toHaveBeenCalledOnce();
   });
+
+  it("does not lose a wakeup during an in-flight admission probe", async () => {
+    let releaseProbe: (() => void) | undefined;
+    const probe = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    let firstProbe = true;
+    const run = vi.fn(async () => undefined);
+    const scheduler = new JobScheduler(1, () => undefined, {
+      admission: async () => {
+        if (firstProbe) {
+          firstProbe = false;
+          await probe;
+          return { admitted: false, reason: "maintenance" };
+        }
+        return { admitted: true };
+      },
+      retryDelayMs: 60_000
+    });
+
+    scheduler.enqueue("job", run);
+    await new Promise((resolve) => setImmediate(resolve));
+    scheduler.wake();
+    releaseProbe?.();
+    await wait(20);
+
+    expect(run).toHaveBeenCalledOnce();
+  });
 });
 
 async function wait(milliseconds: number): Promise<void> {

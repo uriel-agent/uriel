@@ -29,6 +29,10 @@ describe("worker config", () => {
       URIEL_MAX_CONCURRENT_JOBS: "3",
       URIEL_MAX_HEAVY_JOBS: "3",
       URIEL_MAX_JOB_EVENTS: "250",
+      URIEL_SMOKE_HISTORY_LIMIT: "25",
+      URIEL_WATCHDOG_COOLDOWN_SECONDS: "600",
+      URIEL_WATCHDOG_FAILURE_THRESHOLD: "4",
+      URIEL_WATCHDOG_INTERVAL_SECONDS: "45",
       URIEL_STATE_DIR: "/tmp/uriel"
     });
 
@@ -60,6 +64,10 @@ describe("worker config", () => {
     expect(config.maxConcurrentJobs).toBe(3);
     expect(config.maxHeavyJobs).toBe(2);
     expect(config.maxJobEvents).toBe(250);
+    expect(config.smokeHistoryLimit).toBe(25);
+    expect(config.watchdogCooldownSeconds).toBe(600);
+    expect(config.watchdogFailureThreshold).toBe(4);
+    expect(config.watchdogIntervalSeconds).toBe(45);
   });
 
   it("clamps heavy concurrency to total jobs and dedicated Android slots", () => {
