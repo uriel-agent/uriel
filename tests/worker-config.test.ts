@@ -19,6 +19,7 @@ describe("worker config", () => {
       URIEL_ANDROID_BOOT_TIMEOUT_SECONDS: "420",
       URIEL_ANDROID_EMULATOR_PATH: "/opt/android/emulator/emulator",
       URIEL_ARTIFACT_RETENTION_DAYS: "5",
+      URIEL_CAPACITY_ENFORCE_SWAP: "true",
       URIEL_CAPACITY_MAX_SWAP_USED_MB: "8192",
       URIEL_CAPACITY_MIN_FREE_DISK_MB: "10240",
       URIEL_CAPACITY_MIN_FREE_MEMORY_MB: "3072",
@@ -57,6 +58,7 @@ describe("worker config", () => {
     expect(config.androidBootTimeoutSeconds).toBe(420);
     expect(config.androidEmulatorPath).toBe("/opt/android/emulator/emulator");
     expect(config.artifactRetentionDays).toBe(5);
+    expect(config.capacityEnforceSwap).toBe(true);
     expect(config.capacityMaxSwapUsedMb).toBe(8192);
     expect(config.capacityMinFreeDiskMb).toBe(10240);
     expect(config.capacityMinFreeMemoryMb).toBe(3072);
@@ -74,6 +76,13 @@ describe("worker config", () => {
     expect(config.watchdogCooldownSeconds).toBe(600);
     expect(config.watchdogFailureThreshold).toBe(4);
     expect(config.watchdogIntervalSeconds).toBe(45);
+  });
+
+  it("defaults swap enforcement by platform and accepts an explicit override", () => {
+    expect(loadConfig({}).capacityEnforceSwap).toBe(process.platform !== "darwin");
+    expect(loadConfig({ URIEL_CAPACITY_ENFORCE_SWAP: "true" }).capacityEnforceSwap).toBe(true);
+    expect(loadConfig({ URIEL_CAPACITY_ENFORCE_SWAP: "false" }).capacityEnforceSwap).toBe(false);
+    expect(loadConfig({ URIEL_CAPACITY_ENFORCE_SWAP: "0" }).capacityEnforceSwap).toBe(false);
   });
 
   it("sizes readiness history for seven days of watchdog probes by default", () => {

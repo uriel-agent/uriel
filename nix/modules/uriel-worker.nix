@@ -138,6 +138,12 @@ in
       description = "Maximum host swap usage in MiB allowed when launching heavy work.";
     };
 
+    capacityEnforceSwap = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Whether swap usage participates in heavy-work admission.";
+    };
+
     capacityMinFreeDiskMb = lib.mkOption {
       type = lib.types.ints.positive;
       default = 20480;
@@ -362,6 +368,7 @@ in
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
         URIEL_CAPACITY_MAX_SWAP_USED_MB = toString cfg.capacityMaxSwapUsedMb;
+        URIEL_CAPACITY_ENFORCE_SWAP = if cfg.capacityEnforceSwap then "true" else "false";
         URIEL_CAPACITY_MIN_FREE_DISK_MB = toString cfg.capacityMinFreeDiskMb;
         URIEL_CAPACITY_MIN_FREE_MEMORY_MB = toString cfg.capacityMinFreeMemoryMb;
         URIEL_CAPACITY_RETRY_SECONDS = toString cfg.capacityRetrySeconds;

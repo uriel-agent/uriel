@@ -48,6 +48,47 @@ describe("HostCapacityGovernor", () => {
     });
   });
 
+  it("keeps sticky swap diagnostic-only when enforcement is disabled", async () => {
+    const workerConfig = config();
+    workerConfig.capacityEnforceSwap = false;
+    const governor = new HostCapacityGovernor(workerConfig, async () => ({
+      diskAvailableBytes: 40_000 * MIB,
+      memoryAvailableBytes: 8_000 * MIB,
+      memoryTotalBytes: 16_384 * MIB,
+      swapUsedBytes: 9_000 * MIB
+    }));
+
+    const decision = await governor.evaluate({ activeHeavyJobs: 0, queuedJobs: 0 });
+
+    expect(decision).toMatchObject({
+      admitted: true,
+      snapshot: {
+        status: "available",
+        swap: { enforced: false, ok: false }
+      }
+    });
+    expect(decision.reason).toBeUndefined();
+  });
+
+  it("does not degrade when a diagnostic-only swap reading is unavailable", async () => {
+    const workerConfig = config();
+    workerConfig.capacityEnforceSwap = false;
+    const governor = new HostCapacityGovernor(workerConfig, async () => ({
+      diskAvailableBytes: 40_000 * MIB,
+      memoryAvailableBytes: 8_000 * MIB,
+      memoryTotalBytes: 16_384 * MIB
+    }));
+
+    expect(await governor.evaluate({ activeHeavyJobs: 0, queuedJobs: 0 })).toMatchObject({
+      admitted: true,
+      snapshot: {
+        missingReadings: [],
+        status: "available",
+        swap: { actualBytes: null, enforced: false, ok: null }
+      }
+    });
+  });
+
   it("uses a conservative single slot when readings are missing", async () => {
     const governor = new HostCapacityGovernor(config(), async () => ({}));
 
@@ -85,6 +126,7 @@ describe("HostCapacityGovernor", () => {
 
 function config() {
   return loadConfig({
+    URIEL_CAPACITY_ENFORCE_SWAP: "true",
     URIEL_CAPACITY_MAX_SWAP_USED_MB: "8192",
     URIEL_CAPACITY_MIN_FREE_DISK_MB: "20480",
     URIEL_CAPACITY_MIN_FREE_MEMORY_MB: "4096"

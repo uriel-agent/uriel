@@ -45,7 +45,11 @@ export async function checkWorkerReadiness(
     detail: capacity.admitted
       ? capacity.snapshot.missingReadings.length > 0
         ? `Host capacity is available under the conservative single-slot policy; missing readings: ${capacity.snapshot.missingReadings.join(", ")}.`
-        : "Host RAM, swap, disk, and worker-slot reserves are available."
+        : capacity.snapshot.swap.enforced
+          ? "Host RAM, swap, disk, and worker-slot reserves are available."
+          : capacity.snapshot.swap.ok === false
+            ? `Host RAM, disk, and worker-slot reserves are available; swap usage ${formatMiB(capacity.snapshot.swap.actualBytes)} is diagnostic-only on this host.`
+            : "Host RAM, disk, and worker-slot reserves are available; swap admission is disabled on this host."
       : capacity.reason ?? "Host capacity is temporarily unavailable.",
     id: "host.capacity",
     remediation: capacity.admitted
@@ -276,4 +280,8 @@ function finish(checks: ReadinessCheck[], capacity: HostCapacitySnapshot): Worke
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatMiB(bytes: number | null): string {
+  return bytes === null ? "unknown" : `${Math.round(bytes / (1024 * 1024))} MiB`;
 }
