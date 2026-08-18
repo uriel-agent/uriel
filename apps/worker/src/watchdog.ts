@@ -2,6 +2,7 @@ export interface WatchdogSnapshot {
   consecutiveDegraded: number;
   lastAlertAt?: string;
   lastProbeAt?: string;
+  lastRecordError?: string;
   lastRecoveryAt?: string;
   lastStatus?: "degraded" | "not-ready" | "ready";
   running: boolean;
@@ -10,6 +11,7 @@ export interface WatchdogSnapshot {
 export interface WatchdogProbe {
   actionable: boolean;
   causes: string[];
+  excludedReason?: string;
   status: "degraded" | "not-ready" | "ready";
 }
 
@@ -18,6 +20,7 @@ export interface ReadinessWatchdogOptions {
   cooldownMs: number;
   intervalMs: number;
   probe(): Promise<WatchdogProbe>;
+  record?(probe: WatchdogProbe, at: string): Promise<void>;
   recover(probe: WatchdogProbe): Promise<void>;
   threshold: number;
 }
@@ -26,6 +29,7 @@ export class ReadinessWatchdog {
   private consecutiveDegraded = 0;
   private lastAlertAt?: string;
   private lastProbeAt?: string;
+  private lastRecordError?: string;
   private lastRecoveryAt?: string;
   private lastStatus?: WatchdogProbe["status"];
   private running = false;
@@ -49,6 +53,7 @@ export class ReadinessWatchdog {
       consecutiveDegraded: this.consecutiveDegraded,
       ...(this.lastAlertAt ? { lastAlertAt: this.lastAlertAt } : {}),
       ...(this.lastProbeAt ? { lastProbeAt: this.lastProbeAt } : {}),
+      ...(this.lastRecordError ? { lastRecordError: this.lastRecordError } : {}),
       ...(this.lastRecoveryAt ? { lastRecoveryAt: this.lastRecoveryAt } : {}),
       ...(this.lastStatus ? { lastStatus: this.lastStatus } : {}),
       running: Boolean(this.timer)
@@ -62,6 +67,7 @@ export class ReadinessWatchdog {
       const probe = await this.options.probe();
       this.lastProbeAt = new Date(now).toISOString();
       this.lastStatus = probe.status;
+      await this.record(probe, this.lastProbeAt);
       if (probe.status === "ready") {
         this.consecutiveDegraded = 0;
         return;
@@ -73,7 +79,10 @@ export class ReadinessWatchdog {
       await this.options.recover(probe);
       this.lastRecoveryAt = new Date(now).toISOString();
       const afterRecovery = await this.options.probe();
+      const afterRecoveryAt = new Date(Math.max(now + 1, Date.now())).toISOString();
+      this.lastProbeAt = afterRecoveryAt;
       this.lastStatus = afterRecovery.status;
+      await this.record(afterRecovery, afterRecoveryAt);
       if (afterRecovery.status === "ready") {
         this.consecutiveDegraded = 0;
         return;
@@ -83,6 +92,17 @@ export class ReadinessWatchdog {
       this.lastAlertAt = new Date(now).toISOString();
     } finally {
       this.running = false;
+    }
+  }
+
+  private async record(probe: WatchdogProbe, at: string): Promise<void> {
+    if (!this.options.record) return;
+    try {
+      await this.options.record(probe, at);
+      this.lastRecordError = undefined;
+    } catch (error) {
+      this.lastRecordError = error instanceof Error ? error.message : String(error);
+      reportError(error);
     }
   }
 }

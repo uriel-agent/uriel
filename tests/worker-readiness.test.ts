@@ -124,6 +124,12 @@ describe("worker readiness", () => {
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
+      availability: {
+        coveragePercentage: 0,
+        readyPercentage: null,
+        sampleCount: 0,
+        windowSeconds: 86_400
+      },
       android: { leased: 0, total: 1 },
       provisioning: { configured: true, packageName: "com.example.qa" },
       queue: { activeJobs: 0, queuedJobs: 0 },
@@ -132,6 +138,22 @@ describe("worker readiness", () => {
     expect(serialized).not.toContain("do-not-leak");
     expect(serialized).not.toContain("b".repeat(64));
     expect(serialized).not.toContain("test-token");
+  });
+
+  it("bounds a requested availability window to retention", async () => {
+    const config = await readyConfig();
+    config.readinessHistoryRetentionDays = 2;
+    const baseUrl = await startWorker(config);
+
+    const minimum = await fetch(`${baseUrl}/status?windowSeconds=1`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+    const maximum = await fetch(`${baseUrl}/status?windowSeconds=9999999`, {
+      headers: { authorization: "Bearer test-token" }
+    });
+
+    expect(await minimum.json()).toMatchObject({ availability: { windowSeconds: 60 } });
+    expect(await maximum.json()).toMatchObject({ availability: { windowSeconds: 172_800 } });
   });
 
   it("stays usable but reports degraded when every configured AVD is attached and cold boot is unavailable", async () => {

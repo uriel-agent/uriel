@@ -222,6 +222,9 @@ Common variables:
 - `URIEL_WATCHDOG_INTERVAL_SECONDS` (defaults to `30`)
 - `URIEL_WATCHDOG_FAILURE_THRESHOLD` (defaults to `3`)
 - `URIEL_WATCHDOG_COOLDOWN_SECONDS` (defaults to `300`)
+- `URIEL_READINESS_HISTORY_RETENTION_DAYS` (defaults to `7`)
+- `URIEL_READINESS_HISTORY_MAX_SAMPLES` (defaults to `25000`)
+- `URIEL_READINESS_HISTORY_MAX_GAP_SECONDS` (defaults to three watchdog intervals)
 - `URIEL_SMOKE_HISTORY_LIMIT` (defaults to `50`)
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
@@ -306,7 +309,13 @@ and paths outside worker roots are never terminated or deleted.
 `GET /status` is an authenticated, secret-free operational snapshot covering
 readiness causes, queue depth, active jobs and Android slots, capacity readings,
 active cleanup resources, provisioning configuration, watchdog state, and the
-latest readiness smoke. The watchdog requires consecutive degraded probes,
+latest readiness smoke. It also reports a time-weighted `availability` window
+(24 hours by default, or bounded by `?windowSeconds=`), including measured and
+excluded time, coverage, longest probe gap, and ready percentage. Watchdog
+probes append to a crash-tolerant bounded history; time spent on queued/active
+jobs or exclusive smoke maintenance is explicitly excluded rather than counted
+as downtime, while self-recovery time remains measured. History I/O failures do
+not take the HTTP service offline. The watchdog requires consecutive degraded probes,
 never recovers across active/queued real work, rate-limits recovery by cooldown,
 reconciles owned resources, restarts adb, and writes a structured actionable
 alert to `readiness-alerts.jsonl` only if recovery does not restore readiness.

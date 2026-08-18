@@ -29,6 +29,9 @@ describe("worker config", () => {
       URIEL_MAX_CONCURRENT_JOBS: "3",
       URIEL_MAX_HEAVY_JOBS: "3",
       URIEL_MAX_JOB_EVENTS: "250",
+      URIEL_READINESS_HISTORY_MAX_GAP_SECONDS: "120",
+      URIEL_READINESS_HISTORY_MAX_SAMPLES: "30000",
+      URIEL_READINESS_HISTORY_RETENTION_DAYS: "10",
       URIEL_SMOKE_HISTORY_LIMIT: "25",
       URIEL_WATCHDOG_COOLDOWN_SECONDS: "600",
       URIEL_WATCHDOG_FAILURE_THRESHOLD: "4",
@@ -64,10 +67,21 @@ describe("worker config", () => {
     expect(config.maxConcurrentJobs).toBe(3);
     expect(config.maxHeavyJobs).toBe(2);
     expect(config.maxJobEvents).toBe(250);
+    expect(config.readinessHistoryMaxGapSeconds).toBe(120);
+    expect(config.readinessHistoryMaxSamples).toBe(30_000);
+    expect(config.readinessHistoryRetentionDays).toBe(10);
     expect(config.smokeHistoryLimit).toBe(25);
     expect(config.watchdogCooldownSeconds).toBe(600);
     expect(config.watchdogFailureThreshold).toBe(4);
     expect(config.watchdogIntervalSeconds).toBe(45);
+  });
+
+  it("sizes readiness history for seven days of watchdog probes by default", () => {
+    const config = loadConfig({ URIEL_WATCHDOG_INTERVAL_SECONDS: "20" });
+
+    expect(config.readinessHistoryMaxGapSeconds).toBe(60);
+    expect(config.readinessHistoryMaxSamples).toBe(25_000);
+    expect(config.readinessHistoryRetentionDays).toBe(7);
   });
 
   it("clamps heavy concurrency to total jobs and dedicated Android slots", () => {
