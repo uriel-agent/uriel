@@ -13,6 +13,8 @@ export interface RunCommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  onSpawn?: (pid: number) => Promise<void> | void;
+  processGroup?: boolean;
   timeoutMs?: number;
 }
 
@@ -25,16 +27,21 @@ export async function runCommand(
     const startedAt = Date.now();
     const child = spawn(command, args, {
       cwd: options.cwd,
+      detached: Boolean(options.processGroup && process.platform !== "win32"),
       env: { ...process.env, ...options.env },
       stdio: ["pipe", "pipe", "pipe"]
     });
+    let spawnRegistration: Promise<void> = Promise.resolve();
+    if (child.pid && options.onSpawn) {
+      spawnRegistration = Promise.resolve(options.onSpawn(child.pid));
+    }
     let stdout = "";
     let stderr = "";
     let settled = false;
     const timeout = options.timeoutMs
       ? setTimeout(() => {
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 1000).unref();
+          killChild(child, options.processGroup, "SIGTERM");
+          setTimeout(() => killChild(child, options.processGroup, "SIGKILL"), 1000).unref();
         }, options.timeoutMs)
       : undefined;
 
@@ -64,13 +71,32 @@ export async function runCommand(
       if (timeout) {
         clearTimeout(timeout);
       }
-      resolve({ code: code ?? 1, durationMs: Date.now() - startedAt, stderr, stdout });
+      void spawnRegistration.then(
+        () => resolve({ code: code ?? 1, durationMs: Date.now() - startedAt, stderr, stdout }),
+        reject
+      );
     });
     if (options.input) {
       child.stdin.write(options.input);
     }
     child.stdin.end();
   });
+}
+
+function killChild(
+  child: import("node:child_process").ChildProcess,
+  processGroup: boolean | undefined,
+  signal: NodeJS.Signals
+): void {
+  try {
+    if (processGroup && process.platform !== "win32" && child.pid) {
+      process.kill(-child.pid, signal);
+    } else {
+      child.kill(signal);
+    }
+  } catch {
+    // The process already exited.
+  }
 }
 
 export async function runChecked(

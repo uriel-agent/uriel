@@ -17,6 +17,7 @@ import {
   worktreeSlug
 } from "../../../packages/core/src/index.ts";
 import type { WorkerConfig } from "./config.ts";
+import { CleanupSupervisor } from "./cleanup.ts";
 import type { HostCapacityDecision } from "./host-capacity.ts";
 import {
   configuredAndroidProvisioning,
@@ -32,6 +33,7 @@ import {
   shouldCaptureGenericAndroidQa
 } from "./qa.ts";
 import { JobReporter } from "./reporter.ts";
+import type { ResourceLedger } from "./resource-ledger.ts";
 import {
   commandExists,
   exists,
@@ -47,6 +49,7 @@ export async function runJob(
   runtime: {
     androidAvd?: string;
     capacityGate?: () => Promise<HostCapacityDecision>;
+    cleanup?: CleanupSupervisor;
     iosSimulatorUdid?: string;
   } = {}
 ): Promise<void> {
@@ -57,20 +60,52 @@ export async function runJob(
   });
   const evidence = new EvidenceRecorder();
   const artifactsDir = join(config.artifactsDir, job.id);
+  const cleanup = runtime.cleanup ?? new CleanupSupervisor(config);
+  const ledger = cleanup.ledger;
+  let terminalReason = "job failure";
+  let cleanupDone = false;
+  const cleanupResources = async (): Promise<boolean> => {
+    try {
+      const actions = await cleanup.cleanupJob(job.id, terminalReason);
+      await reporter.event("worker", "info", `Cleanup completed after ${terminalReason}.`, {
+        actions: JSON.parse(JSON.stringify(actions)) as JsonValue
+      });
+      return true;
+    } catch (cleanupError) {
+      try {
+        await reporter.event("worker", "error", `Cleanup failed: ${errorMessage(cleanupError)}`);
+      } catch {
+        console.error(`Cleanup failed for ${job.id}: ${errorMessage(cleanupError)}`);
+      }
+      return false;
+    }
+  };
 
   try {
     await mkdir(artifactsDir, { recursive: true });
+    await ledger.record(job.id, "artifacts", "artifacts", { path: artifactsDir });
     await reporter.status("running");
     await reporter.event("job", "info", `Starting job ${job.id}.`);
 
-    const worktree = await prepareWorktree(job, config, reporter, evidence);
+    const worktree = await prepareWorktree(job, config, reporter, evidence, ledger);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await runProfileSetup(job, config, worktree, reporter, evidence);
     let androidSerial: string | undefined;
     if ((job.qa === "android" || job.qa === "both" || job.qa === "all") && config.enableAndroidQa) {
       try {
         await waitForHostCapacity("Android emulator allocation", config, reporter, runtime);
-        androidSerial = await ensureAndroidDevice(config, reporter, evidence, runtime.androidAvd);
+        androidSerial = await ensureAndroidDevice(
+          config,
+          reporter,
+          evidence,
+          runtime.androidAvd,
+          async ({ avd, serial }) => {
+            await ledger.record(job.id, "android-device", "android-device", {
+              avd,
+              serial: serial ?? null
+            });
+          }
+        );
       } catch (error) {
         await reporter.event(
           "qa",
@@ -89,6 +124,12 @@ export async function runJob(
           evidence,
           runtime.androidAvd ?? config.androidAvd
         );
+        if (config.androidAppPackage) {
+          await ledger.record(job.id, "package-marker", "package-marker", {
+            packageName: config.androidAppPackage,
+            serial: androidSerial
+          });
+        }
         if (shouldCaptureGenericAndroidQa(job)) {
           const adb = (await resolveAndroidTools(config)).adb;
           if (!adb) {
@@ -124,7 +165,16 @@ export async function runJob(
     let harnessFailed = false;
     try {
       await waitForHostCapacity("coding harness launch", config, reporter, runtime);
-      await runHarness(job, config, worktree, artifactsDir, reporter, evidence, androidSerial);
+      await runHarness(
+        job,
+        config,
+        worktree,
+        artifactsDir,
+        reporter,
+        evidence,
+        ledger,
+        androidSerial
+      );
     } catch (error) {
       harnessError = error;
       harnessFailed = true;
@@ -152,16 +202,23 @@ export async function runJob(
     await finalizePullRequest(job, worktree, artifactsDir, store, reporter, evidence);
 
     await reporter.status("completed");
+    terminalReason = "job completed";
     await writeEvidenceManifest(evidence, job, store, reporter, "Job completed.");
+    cleanupDone = await cleanupResources();
     await sendJobCallback(job, config, reporter, "Job completed.");
     await reporter.event("job", "info", "Job completed.");
   } catch (error) {
     const summary = errorMessage(error);
-    await reporter.status("failed");
+    const cancelled = (await store.getJob(job.id))?.status === "cancelled";
+    terminalReason = cancelled ? "job cancelled" : "job failed";
+    if (!cancelled) await reporter.status("failed");
     await writeEvidenceManifest(evidence, job, store, reporter, summary);
+    cleanupDone = await cleanupResources();
     await sendJobCallback(job, config, reporter, summary);
-    await reporter.event("job", "error", summary);
-    throw error;
+    await reporter.event("job", cancelled ? "warn" : "error", summary);
+    if (!cancelled) throw error;
+  } finally {
+    if (!cleanupDone) await cleanupResources();
   }
 }
 
@@ -204,7 +261,8 @@ async function prepareWorktree(
   job: Job,
   config: WorkerConfig,
   reporter: JobReporter,
-  evidence: EvidenceRecorder
+  evidence: EvidenceRecorder,
+  ledger: ResourceLedger
 ): Promise<string> {
   await mkdir(config.reposDir, { recursive: true });
   await mkdir(config.worktreesDir, { recursive: true });
@@ -214,6 +272,7 @@ async function prepareWorktree(
     config.worktreesDir,
     `${job.id}-${worktreeSlug(job.branch)}`
   );
+  await ledger.record(job.id, "worktree", "worktree", { cacheDir, path: worktree });
   if (await exists(worktree)) {
     await rm(worktree, { force: true, recursive: true });
   }
@@ -382,6 +441,7 @@ async function runHarness(
   artifactsDir: string,
   reporter: JobReporter,
   evidence: EvidenceRecorder,
+  ledger: ResourceLedger,
   androidSerial?: string
 ): Promise<void> {
   const harnessId = metadataString(job, "harness") ?? config.harnessAdapter ?? "opencode";
@@ -415,11 +475,28 @@ async function runHarness(
   }
 
   await reporter.event("worker", "info", `Running ${harnessId} headlessly.`);
-  const result = await runObservedCommand(evidence, invocation.command, invocation.args, {
-    cwd: worktree,
-    ...(androidSerial ? { env: { ANDROID_SERIAL: androidSerial } } : {}),
-    timeoutMs: config.harnessTimeoutMinutes * 60_000
-  });
+  let processRecorded = false;
+  let result: CommandResult;
+  try {
+    result = await runObservedCommand(evidence, invocation.command, invocation.args, {
+      cwd: worktree,
+      ...(androidSerial ? { env: { ANDROID_SERIAL: androidSerial } } : {}),
+      onSpawn: async (pid) => {
+        const processStartedAt = await readProcessStart(pid);
+        await ledger.record(job.id, "harness-process", "harness-process", {
+          command: invocation.command,
+          pid,
+          processGroup: process.platform !== "win32",
+          ...(processStartedAt ? { processStartedAt } : {})
+        });
+        processRecorded = true;
+      },
+      processGroup: true,
+      timeoutMs: config.harnessTimeoutMinutes * 60_000
+    });
+  } finally {
+    if (processRecorded) await ledger.release(job.id, "harness-process");
+  }
   await writeFile(transcriptPath, result.stdout + result.stderr);
   await reporter.uploadArtifact(
     invocation.transcriptArtifact,
@@ -429,6 +506,13 @@ async function runHarness(
   if (result.code !== 0) {
     throw new Error(`${harnessId} failed with ${result.code}.`);
   }
+}
+
+async function readProcessStart(pid: number): Promise<string | undefined> {
+  const result = await runCommand("ps", ["-p", String(pid), "-o", "lstart="], {
+    timeoutMs: 5_000
+  });
+  return result.code === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 async function collectAgentArtifacts(

@@ -36,6 +36,50 @@ describe("LocalJobStore restart recovery", () => {
     );
     expect((await store.getJob(queued.id))?.status).toBe("queued");
   });
+
+  it("bounds persisted event logs", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "uriel-store-"));
+    temporaryDirectories.push(stateDir);
+    const store = new LocalJobStore(loadConfig({
+      URIEL_MAX_JOB_EVENTS: "2",
+      URIEL_STATE_DIR: stateDir
+    }));
+    const job = jobWithStatus("queued");
+    await store.putJob(job);
+    const { createJobEvent } = await import("../packages/core/src/index.ts");
+
+    await store.appendEvent(job.id, createJobEvent("worker", "info", "one"));
+    await store.appendEvent(job.id, createJobEvent("worker", "info", "two"));
+    await store.appendEvent(job.id, createJobEvent("worker", "info", "three"));
+
+    expect((await store.getJob(job.id))?.events.map(({ message }) => message)).toEqual([
+      "two",
+      "three"
+    ]);
+  });
+
+  it("does not let concurrent events resurrect a cancelled job", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "uriel-store-"));
+    temporaryDirectories.push(stateDir);
+    const store = new LocalJobStore(loadConfig({ URIEL_STATE_DIR: stateDir }));
+    const job = jobWithStatus("running");
+    await store.putJob(job);
+    const { createJobEvent } = await import("../packages/core/src/index.ts");
+
+    await Promise.all([
+      store.cancelJob(job.id),
+      ...Array.from({ length: 25 }, (_, index) =>
+        new LocalJobStore(loadConfig({ URIEL_STATE_DIR: stateDir })).appendEvent(
+          job.id,
+          createJobEvent("worker", "info", `concurrent-${index}`)
+        )
+      )
+    ]);
+
+    const persisted = await store.getJob(job.id);
+    expect(persisted?.status).toBe("cancelled");
+    expect(persisted?.events).toHaveLength(26);
+  });
 });
 
 function jobWithStatus(status: Job["status"]): Job {

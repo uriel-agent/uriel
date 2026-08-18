@@ -14,6 +14,7 @@ import {
   validateCreateJobRequest
 } from "../../../packages/core/src/index.ts";
 import { loadConfig, type WorkerConfig } from "./config.ts";
+import { CleanupSupervisor } from "./cleanup.ts";
 import { AndroidSlotPool } from "./android-slots.ts";
 import { androidAvdOwnershipErrors } from "./android-ownership.ts";
 import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
@@ -27,6 +28,7 @@ import { checkWorkerReadiness } from "./worker-readiness.ts";
 const scheduler: {
   androidSlots?: AndroidSlotPool;
   capacity?: HostCapacityGovernor;
+  cleanup?: CleanupSupervisor;
   iosSimulatorSlots?: IosSimulatorSlotPool;
   jobs?: JobScheduler;
 } = {};
@@ -48,11 +50,13 @@ async function main(argv: string[]): Promise<void> {
     const job = JSON.parse(await readFile(jobFile, "utf8")) as Job;
     const config = loadConfig();
     const capacity = new HostCapacityGovernor(config);
+    const cleanup = new CleanupSupervisor(config);
     await runJob(job, config, {
       capacityGate: async () => capacity.evaluate(
         { activeHeavyJobs: 1, queuedJobs: 0 },
         { enforceWorkerLimit: false }
-      )
+      ),
+      cleanup
     });
     return;
   }
@@ -65,6 +69,11 @@ async function main(argv: string[]): Promise<void> {
 async function serve(config: WorkerConfig): Promise<void> {
   const store = new LocalJobStore(config);
   await store.init();
+  scheduler.cleanup = new CleanupSupervisor(config);
+  const startupCleanup = await scheduler.cleanup.reconcileStartup();
+  if (startupCleanup.length > 0) {
+    console.log(JSON.stringify({ actions: startupCleanup, type: "startup-cleanup" }));
+  }
   const strandedJobs = await store.failRunningJobsAfterRestart();
   scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
   scheduler.iosSimulatorSlots = new IosSimulatorSlotPool(config.iosSimulatorUdids);
@@ -210,6 +219,15 @@ export async function handleRequest(
           createJobEvent("worker", "info", "Removed cancelled job from the scheduler queue.")
         );
       }
+      if (scheduler.cleanup) {
+        const actions = await scheduler.cleanup.cleanupJob(jobId, "job cancelled");
+        await new LocalJobStore(config).appendEvent(
+          jobId,
+          createJobEvent("worker", "info", "Cancellation cleanup completed.", {
+            actions: JSON.parse(JSON.stringify(actions)) as JsonValue
+          })
+        );
+      }
       writeJson(response, 200, result.job);
       return;
     }
@@ -290,6 +308,12 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
       ? await scheduler.iosSimulatorSlots?.acquire()
       : undefined;
     try {
+      if (androidLease?.avd && scheduler.cleanup) {
+        await scheduler.cleanup.claimAndroidDevice(androidLease.avd);
+        await scheduler.cleanup.ledger.record(job.id, "android-lease", "android-lease", {
+          avd: androidLease.avd
+        });
+      }
       const leasedJob = await new LocalJobStore(config).getJob(job.id);
       if (leasedJob?.status !== "queued") return;
       await runJob(job, config, {
@@ -298,11 +322,16 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
           activeHeavyJobs: scheduler.jobs?.state().activeJobs ?? 1,
           queuedJobs: scheduler.jobs?.state().queuedJobs ?? 0
         }, { enforceWorkerLimit: false }),
+        cleanup: scheduler.cleanup,
         iosSimulatorUdid: iosSimulatorLease?.udid
       });
     } finally {
       androidLease?.release();
+      if (androidLease && scheduler.cleanup) {
+        await scheduler.cleanup.ledger.release(job.id, "android-lease");
+      }
       iosSimulatorLease?.release();
+      if (scheduler.cleanup) await scheduler.cleanup.applyRetention();
     }
   });
 }

@@ -261,7 +261,8 @@ export async function ensureAndroidDevice(
   config: WorkerConfig,
   reporter: JobReporter,
   evidence?: EvidenceRecorder,
-  requestedAvd: string | undefined = config.androidAvd
+  requestedAvd: string | undefined = config.androidAvd,
+  onDeviceOwned?: (binding: { avd: string; serial?: string }) => Promise<void>
 ): Promise<string | undefined> {
   const ownershipErrors = androidAvdOwnershipErrors(config);
   if (ownershipErrors.length > 0) {
@@ -296,6 +297,7 @@ export async function ensureAndroidDevice(
   let serial: string | undefined;
   await reporter.event("qa", "info", `Ensuring Android AVD ${requestedAvd} is booted.`);
   serial = await serialForAvd(requestedAvd, adbCommand, evidence);
+  if (serial) await onDeviceOwned?.({ avd: requestedAvd, serial });
   if (!serial) {
     const acceleration = tools.emulator
       ? await checkAndroidEmulatorAcceleration(tools.emulator.command)
@@ -324,11 +326,15 @@ export async function ensureAndroidDevice(
       });
       return undefined;
     }
+    await onDeviceOwned?.({ avd: requestedAvd });
   }
   const deadline = Date.now() + config.androidBootTimeoutSeconds * 1_000;
   let bootCompleted = false;
   while (Date.now() < deadline) {
-    serial = serial ?? await serialForAvd(requestedAvd, adbCommand, evidence);
+    if (!serial) {
+      serial = await serialForAvd(requestedAvd, adbCommand, evidence);
+      if (serial) await onDeviceOwned?.({ avd: requestedAvd, serial });
+    }
     if (!serial) {
       await delay(Math.max(1, Math.min(2_000, deadline - Date.now())));
       continue;

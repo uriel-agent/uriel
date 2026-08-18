@@ -157,12 +157,36 @@ in
     };
 
     artifactRetentionDays = lib.mkOption {
-      type = lib.types.nullOr lib.types.ints.positive;
-      default = null;
+      type = lib.types.ints.positive;
+      default = 7;
       description = ''
-        Optional tmpfiles cleanup age for local artifacts. Null keeps artifacts
-        until an operator deletes them.
+        Cleanup age for local artifacts. Both the worker ownership ledger and
+        systemd tmpfiles enforce this bounded retention window.
       '';
+    };
+
+    ledgerRetentionDays = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 30;
+      description = "Retention age for fully released resource journals.";
+    };
+
+    maxJobEvents = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 500;
+      description = "Maximum structured events retained in each job record.";
+    };
+
+    cleanupGraceSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 10;
+      description = "Grace period between terminating and force-killing an owned process.";
+    };
+
+    deviceIdleTtlSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "Idle time before a released worker-owned Android device is stopped.";
     };
 
     environmentFiles = lib.mkOption {
@@ -298,9 +322,7 @@ in
       "d ${toString cfg.stateDir} 0750 ${cfg.user} ${cfg.group} - -"
       "d ${toString cfg.stateDir}/repos 0750 ${cfg.user} ${cfg.group} - -"
       "d ${toString cfg.stateDir}/worktrees 0750 ${cfg.user} ${cfg.group} - -"
-      "d ${toString cfg.stateDir}/artifacts 0750 ${cfg.user} ${cfg.group} ${
-        if cfg.artifactRetentionDays == null then "-" else "${toString cfg.artifactRetentionDays}d"
-      } -"
+      "d ${toString cfg.stateDir}/artifacts 0750 ${cfg.user} ${cfg.group} ${toString cfg.artifactRetentionDays}d -"
     ];
 
     systemd.services.uriel-worker = {
@@ -312,14 +334,19 @@ in
       environment = {
         URIEL_ANDROID_BOOT_TIMEOUT_SECONDS = toString cfg.androidBootTimeoutSeconds;
         URIEL_ANDROID_AVD_PREFIX = cfg.androidAvdPrefix;
+        URIEL_ARTIFACT_RETENTION_DAYS = toString cfg.artifactRetentionDays;
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
         URIEL_CAPACITY_MAX_SWAP_USED_MB = toString cfg.capacityMaxSwapUsedMb;
         URIEL_CAPACITY_MIN_FREE_DISK_MB = toString cfg.capacityMinFreeDiskMb;
         URIEL_CAPACITY_MIN_FREE_MEMORY_MB = toString cfg.capacityMinFreeMemoryMb;
         URIEL_CAPACITY_RETRY_SECONDS = toString cfg.capacityRetrySeconds;
+        URIEL_CLEANUP_GRACE_SECONDS = toString cfg.cleanupGraceSeconds;
+        URIEL_DEVICE_IDLE_TTL_SECONDS = toString cfg.deviceIdleTtlSeconds;
+        URIEL_LEDGER_RETENTION_DAYS = toString cfg.ledgerRetentionDays;
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;
         URIEL_MAX_HEAVY_JOBS = toString cfg.maxHeavyJobs;
+        URIEL_MAX_JOB_EVENTS = toString cfg.maxJobEvents;
         URIEL_CALLBACK_TIMEOUT_SECONDS = toString cfg.callbackTimeoutSeconds;
         URIEL_STATE_DIR = toString cfg.stateDir;
         URIEL_WORKER_HOST = cfg.host;
