@@ -9,6 +9,12 @@ import {
   type AndroidToolResolution
 } from "./android-tooling.ts";
 import type { WorkerConfig } from "./config.ts";
+import {
+  HostCapacityGovernor,
+  type HostCapacityDecision,
+  type HostCapacitySnapshot,
+  type WorkerCapacityUsage
+} from "./host-capacity.ts";
 import { exists, runCommand } from "./shell.ts";
 
 export type ReadinessCheckStatus = "pass" | "warn" | "fail" | "disabled";
@@ -21,21 +27,41 @@ export interface ReadinessCheck {
 }
 
 export interface WorkerReadiness {
+  capacity: HostCapacitySnapshot;
   checks: ReadinessCheck[];
   ok: boolean;
   service: "uriel-worker";
   status: "ready" | "degraded" | "not-ready";
 }
 
-export async function checkWorkerReadiness(config: WorkerConfig): Promise<WorkerReadiness> {
+export async function checkWorkerReadiness(
+  config: WorkerConfig,
+  usage: WorkerCapacityUsage = { activeHeavyJobs: 0, queuedJobs: 0 },
+  capacityDecision?: HostCapacityDecision
+): Promise<WorkerReadiness> {
   const checks: ReadinessCheck[] = [];
+  const capacity = capacityDecision ?? await new HostCapacityGovernor(config).evaluate(usage);
+  checks.push({
+    detail: capacity.admitted
+      ? capacity.snapshot.missingReadings.length > 0
+        ? `Host capacity is available under the conservative single-slot policy; missing readings: ${capacity.snapshot.missingReadings.join(", ")}.`
+        : "Host RAM, swap, disk, and worker-slot reserves are available."
+      : capacity.reason ?? "Host capacity is temporarily unavailable.",
+    id: "host.capacity",
+    remediation: capacity.admitted
+      ? undefined
+      : "Wait for resource pressure to recover, or adjust the documented capacity reserves after validating host headroom.",
+    status: capacity.admitted
+      ? capacity.snapshot.missingReadings.length > 0 ? "warn" : "pass"
+      : "fail"
+  });
   if (!config.enableAndroidQa) {
     checks.push({
       detail: "Android QA is disabled by worker configuration.",
       id: "android.enabled",
       status: "disabled"
     });
-    return finish(checks);
+    return finish(checks, capacity.snapshot);
   }
 
   checks.push({
@@ -60,7 +86,7 @@ export async function checkWorkerReadiness(config: WorkerConfig): Promise<Worker
   if (!tools.adb) {
     checks.push(missingToolCheck("adb", tools.adbCandidates, "URIEL_ANDROID_ADB_PATH"));
     await checkProvisioning(config, checks);
-    return finish(checks);
+    return finish(checks, capacity.snapshot);
   }
   checks.push({
     detail: `${tools.adb.command} (${tools.adb.source})`,
@@ -77,7 +103,7 @@ export async function checkWorkerReadiness(config: WorkerConfig): Promise<Worker
       status: "fail"
     });
     await checkProvisioning(config, checks);
-    return finish(checks);
+    return finish(checks, capacity.snapshot);
   }
   checks.push({
     detail: `adb responded with ${attached.devices.length} attached device(s).`,
@@ -87,7 +113,7 @@ export async function checkWorkerReadiness(config: WorkerConfig): Promise<Worker
 
   await checkAvds(config, tools, attached.avds, checks);
   await checkProvisioning(config, checks);
-  return finish(checks);
+  return finish(checks, capacity.snapshot);
 }
 
 async function checkAvds(
@@ -236,10 +262,11 @@ function missingToolCheck(
   };
 }
 
-function finish(checks: ReadinessCheck[]): WorkerReadiness {
+function finish(checks: ReadinessCheck[], capacity: HostCapacitySnapshot): WorkerReadiness {
   const failed = checks.some((check) => check.status === "fail");
   const warned = checks.some((check) => check.status === "warn");
   return {
+    capacity,
     checks,
     ok: !failed,
     service: "uriel-worker",

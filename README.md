@@ -209,6 +209,11 @@ Common variables:
 - `URIEL_CODEX_MODEL`
 - `URIEL_CODEX_EFFORT`
 - `URIEL_MAX_CONCURRENT_JOBS`
+- `URIEL_MAX_HEAVY_JOBS` (defaults to `1`; clamped to total jobs and dedicated Android slots)
+- `URIEL_CAPACITY_MIN_FREE_MEMORY_MB` (defaults to `4096`)
+- `URIEL_CAPACITY_MAX_SWAP_USED_MB` (defaults to `32768`)
+- `URIEL_CAPACITY_MIN_FREE_DISK_MB` (defaults to `20480`)
+- `URIEL_CAPACITY_RETRY_SECONDS` (defaults to `15`)
 - `URIEL_ENABLE_BROWSER_QA`
 - `URIEL_ENABLE_ANDROID_QA`
 - `URIEL_ENABLE_IOS_QA`
@@ -268,6 +273,15 @@ provisioning configuration without booting an emulator. It returns `503` with
 per-check remediation when the worker cannot safely accept Android QA. Tool
 resolution prefers explicit `URIEL_ANDROID_ADB_PATH` and
 `URIEL_ANDROID_EMULATOR_PATH` values, then stable SDK roots, then `PATH`.
+
+The worker also admits heavy jobs only while configured RAM, swap, disk, and
+worker-slot reserves are available. Admission happens before a job receives an
+emulator lease, and the worker rechecks immediately before emulator, coding
+harness, and QA process launches. Temporary pressure leaves jobs queued in FIFO
+order and retries automatically while `/health` stays online. `/ready` exposes
+the current readings, configured limits, active/queued ownership, missing
+readings, and the blocking reason. When a reading is unavailable, Uriel uses a
+conservative single-heavy-job policy instead of assuming unlimited capacity.
 
 On macOS, configure `URIEL_IOS_SIMULATOR_UDID` to select one simulator, or
 `URIEL_IOS_SIMULATOR_UDIDS` as a comma-separated pool for concurrent jobs.

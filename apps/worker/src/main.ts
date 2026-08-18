@@ -9,6 +9,7 @@ import {
   createId,
   parseGitHubRepo,
   type CreateJobRequest,
+  type JsonValue,
   type Job,
   validateCreateJobRequest
 } from "../../../packages/core/src/index.ts";
@@ -17,6 +18,7 @@ import { AndroidSlotPool } from "./android-slots.ts";
 import { androidAvdOwnershipErrors } from "./android-ownership.ts";
 import { IosSimulatorSlotPool } from "./ios-simulator-slots.ts";
 import { JobScheduler } from "./job-scheduler.ts";
+import { HostCapacityGovernor, type HostCapacityDecision } from "./host-capacity.ts";
 import { JobReporter } from "./reporter.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
 import { LocalJobStore } from "./store.ts";
@@ -24,6 +26,7 @@ import { checkWorkerReadiness } from "./worker-readiness.ts";
 
 const scheduler: {
   androidSlots?: AndroidSlotPool;
+  capacity?: HostCapacityGovernor;
   iosSimulatorSlots?: IosSimulatorSlotPool;
   jobs?: JobScheduler;
 } = {};
@@ -43,7 +46,14 @@ async function main(argv: string[]): Promise<void> {
       throw new Error("uriel-worker run requires --job-file <path>.");
     }
     const job = JSON.parse(await readFile(jobFile, "utf8")) as Job;
-    await runJob(job, loadConfig());
+    const config = loadConfig();
+    const capacity = new HostCapacityGovernor(config);
+    await runJob(job, config, {
+      capacityGate: async () => capacity.evaluate(
+        { activeHeavyJobs: 1, queuedJobs: 0 },
+        { enforceWorkerLimit: false }
+      )
+    });
     return;
   }
 
@@ -58,8 +68,32 @@ async function serve(config: WorkerConfig): Promise<void> {
   const strandedJobs = await store.failRunningJobsAfterRestart();
   scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
   scheduler.iosSimulatorSlots = new IosSimulatorSlotPool(config.iosSimulatorUdids);
+  scheduler.capacity = new HostCapacityGovernor(config);
   scheduler.jobs = new JobScheduler(config.maxConcurrentJobs, (error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  }, {
+    admission: async ({ activeJobs, queuedJobs }) => {
+      const decision = await scheduler.capacity?.evaluate({
+        activeHeavyJobs: activeJobs,
+        queuedJobs
+      });
+      return decision
+        ? { admitted: decision.admitted, reason: decision.reason, state: decision }
+        : { admitted: false, reason: "host capacity governor is unavailable" };
+    },
+    onBlocked: async (jobId, decision) => {
+      await appendCapacityEvent(
+        config,
+        jobId,
+        "warn",
+        `Queued for host capacity: ${decision.reason ?? "host capacity is temporarily unavailable"}`,
+        decision
+      );
+    },
+    onUnblocked: async (jobId, decision) => {
+      await appendCapacityEvent(config, jobId, "info", "Host capacity recovered; starting job.", decision);
+    },
+    retryDelayMs: config.capacityRetrySeconds * 1_000
   });
   const server = createServer((request, response) => {
     void handleRequest(request, response, config);
@@ -100,7 +134,13 @@ export async function handleRequest(
     }
 
     if (request.method === "GET" && url.pathname === "/ready") {
-      const readiness = await checkWorkerReadiness(config);
+      const schedulerState = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
+      const usage = {
+        activeHeavyJobs: schedulerState.activeJobs,
+        queuedJobs: schedulerState.queuedJobs
+      };
+      const decision = await (scheduler.capacity ?? new HostCapacityGovernor(config)).evaluate(usage);
+      const readiness = await checkWorkerReadiness(config, usage, decision);
       writeJson(response, readiness.ok ? 200 : 503, readiness);
       return;
     }
@@ -254,6 +294,10 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
       if (leasedJob?.status !== "queued") return;
       await runJob(job, config, {
         androidAvd: androidLease?.avd,
+        capacityGate: async () => (scheduler.capacity ?? new HostCapacityGovernor(config)).evaluate({
+          activeHeavyJobs: scheduler.jobs?.state().activeJobs ?? 1,
+          queuedJobs: scheduler.jobs?.state().queuedJobs ?? 0
+        }, { enforceWorkerLimit: false }),
         iosSimulatorUdid: iosSimulatorLease?.udid
       });
     } finally {
@@ -261,6 +305,24 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
       iosSimulatorLease?.release();
     }
   });
+}
+
+async function appendCapacityEvent(
+  config: WorkerConfig,
+  jobId: string,
+  level: "info" | "warn",
+  message: string,
+  decision: { state?: unknown }
+): Promise<void> {
+  const state = decision.state as HostCapacityDecision | undefined;
+  await new LocalJobStore(config).appendEvent(
+    jobId,
+    createJobEvent("worker", level, message, state ? capacityDecisionJson(state) : undefined)
+  );
+}
+
+function capacityDecisionJson(decision: HostCapacityDecision): JsonValue {
+  return JSON.parse(JSON.stringify(decision)) as JsonValue;
 }
 
 function createJob(request: CreateJobRequest): Job {

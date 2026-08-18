@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveAndroidTools } from "../apps/worker/src/android-tooling.ts";
 import { loadConfig, type WorkerConfig } from "../apps/worker/src/config.ts";
 import { handleRequest } from "../apps/worker/src/main.ts";
+import { HostCapacityGovernor } from "../apps/worker/src/host-capacity.ts";
+import { checkWorkerReadiness } from "../apps/worker/src/worker-readiness.ts";
 
 const servers: Server[] = [];
 const temporaryDirectories: string[] = [];
@@ -57,6 +59,37 @@ describe("Android tool resolution", () => {
 });
 
 describe("worker readiness", () => {
+  it("reports structured host pressure while leaving liveness independent", async () => {
+    const config = loadConfig({ URIEL_ENABLE_ANDROID_QA: "false" });
+    const decision = await new HostCapacityGovernor(config, async () => ({
+      diskAvailableBytes: 1,
+      memoryAvailableBytes: 1,
+      memoryTotalBytes: 2,
+      swapUsedBytes: 64 * 1024 ** 3
+    })).evaluate({ activeHeavyJobs: 0, queuedJobs: 2 });
+
+    const readiness = await checkWorkerReadiness(
+      config,
+      { activeHeavyJobs: 0, queuedJobs: 2 },
+      decision
+    );
+
+    expect(readiness).toMatchObject({
+      capacity: {
+        disk: { actualBytes: 1, ok: false },
+        memory: { actualBytes: 1, ok: false, totalBytes: 2 },
+        status: "pressured",
+        worker: { activeHeavyJobs: 0, queuedJobs: 2 }
+      },
+      ok: false,
+      status: "not-ready"
+    });
+    expect(readiness.checks).toContainEqual(expect.objectContaining({
+      id: "host.capacity",
+      status: "fail"
+    }));
+  });
+
   it("keeps liveness public and makes detailed readiness authenticated", async () => {
     const config = await readyConfig();
     const baseUrl = await startWorker(config);

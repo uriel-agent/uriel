@@ -13,9 +13,11 @@ import {
   signPayloadSha256,
   type CheckResult,
   type Job,
+  type JsonValue,
   worktreeSlug
 } from "../../../packages/core/src/index.ts";
 import type { WorkerConfig } from "./config.ts";
+import type { HostCapacityDecision } from "./host-capacity.ts";
 import {
   configuredAndroidProvisioning,
   provisionAndroidApp
@@ -42,7 +44,11 @@ import { LocalJobStore } from "./store.ts";
 export async function runJob(
   job: Job,
   config: WorkerConfig,
-  runtime: { androidAvd?: string; iosSimulatorUdid?: string } = {}
+  runtime: {
+    androidAvd?: string;
+    capacityGate?: () => Promise<HostCapacityDecision>;
+    iosSimulatorUdid?: string;
+  } = {}
 ): Promise<void> {
   const store = new LocalJobStore(config);
   const reporter = new JobReporter({
@@ -63,6 +69,7 @@ export async function runJob(
     let androidSerial: string | undefined;
     if ((job.qa === "android" || job.qa === "both" || job.qa === "all") && config.enableAndroidQa) {
       try {
+        await waitForHostCapacity("Android emulator allocation", config, reporter, runtime);
         androidSerial = await ensureAndroidDevice(config, reporter, evidence, runtime.androidAvd);
       } catch (error) {
         await reporter.event(
@@ -116,6 +123,7 @@ export async function runJob(
     let harnessError: unknown;
     let harnessFailed = false;
     try {
+      await waitForHostCapacity("coding harness launch", config, reporter, runtime);
       await runHarness(job, config, worktree, artifactsDir, reporter, evidence, androidSerial);
     } catch (error) {
       harnessError = error;
@@ -128,6 +136,7 @@ export async function runJob(
     if (harnessFailed) {
       throw harnessError;
     }
+    await waitForHostCapacity("QA process launch", config, reporter, runtime);
     const qaSummaries = await runQa(
       job,
       config,
@@ -154,6 +163,41 @@ export async function runJob(
     await reporter.event("job", "error", summary);
     throw error;
   }
+}
+
+async function waitForHostCapacity(
+  operation: string,
+  config: WorkerConfig,
+  reporter: JobReporter,
+  runtime: { capacityGate?: () => Promise<HostCapacityDecision> }
+): Promise<void> {
+  if (!runtime.capacityGate) return;
+  let lastReason: string | undefined;
+  while (true) {
+    const decision = await runtime.capacityGate();
+    if (decision.admitted) {
+      if (lastReason) {
+        await reporter.event("worker", "info", `Host capacity recovered before ${operation}.`, {
+          capacity: capacitySnapshotJson(decision)
+        });
+      }
+      return;
+    }
+    const reason = decision.reason ?? "host capacity is temporarily unavailable";
+    if (reason !== lastReason) {
+      await reporter.event("worker", "warn", `Waiting for host capacity before ${operation}: ${reason}`, {
+        capacity: capacitySnapshotJson(decision),
+        operation,
+        reason
+      });
+      lastReason = reason;
+    }
+    await delay(config.capacityRetrySeconds * 1_000);
+  }
+}
+
+function capacitySnapshotJson(decision: HostCapacityDecision): JsonValue {
+  return JSON.parse(JSON.stringify(decision.snapshot)) as JsonValue;
 }
 
 async function prepareWorktree(
