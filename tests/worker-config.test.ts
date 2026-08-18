@@ -10,11 +10,13 @@ describe("worker config", () => {
       URIEL_CALLBACK_TIMEOUT_SECONDS: "90",
       URIEL_ENABLE_ANDROID_QA: "false",
       URIEL_ENABLE_BROWSER_QA: "false",
+      URIEL_ANDROID_ADB_PATH: "/opt/android/platform-tools/adb",
       URIEL_ANDROID_AVDS: "qa-1, qa-2,qa-1",
       URIEL_ANDROID_APK_SHA256: "a".repeat(64),
       URIEL_ANDROID_APK_URL: "https://example.test/app.apk",
       URIEL_ANDROID_APP_PACKAGE: "com.example.qa",
       URIEL_ANDROID_BOOT_TIMEOUT_SECONDS: "420",
+      URIEL_ANDROID_EMULATOR_PATH: "/opt/android/emulator/emulator",
       URIEL_MAX_CONCURRENT_JOBS: "3",
       URIEL_STATE_DIR: "/tmp/uriel"
     });
@@ -27,12 +29,14 @@ describe("worker config", () => {
     expect(config.callbackTimeoutSeconds).toBe(90);
     expect(config.enableAndroidQa).toBe(false);
     expect(config.enableBrowserQa).toBe(false);
+    expect(config.androidAdbPath).toBe("/opt/android/platform-tools/adb");
     expect(config.androidAvds).toEqual(["qa-1", "qa-2", "qa-1"]);
     expect(config.androidAvd).toBe("qa-1");
     expect(config.androidApkSha256).toBe("a".repeat(64));
     expect(config.androidApkUrl).toBe("https://example.test/app.apk");
     expect(config.androidAppPackage).toBe("com.example.qa");
     expect(config.androidBootTimeoutSeconds).toBe(420);
+    expect(config.androidEmulatorPath).toBe("/opt/android/emulator/emulator");
     expect(config.maxConcurrentJobs).toBe(3);
   });
 

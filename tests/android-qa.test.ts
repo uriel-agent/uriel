@@ -144,6 +144,7 @@ exit 1
     const reporter = { event: async () => undefined };
     try {
       const config = loadConfig({
+        URIEL_ANDROID_ADB_PATH: adbPath,
         URIEL_ANDROID_APK_SHA256: sha256,
         URIEL_ANDROID_APK_URL: `http://127.0.0.1:${address.port}/qa.apk`,
         URIEL_ANDROID_APP_PACKAGE: "com.example.qa",

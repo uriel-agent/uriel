@@ -1,10 +1,12 @@
 export interface WorkerConfig {
+  androidAdbPath?: string;
   androidAvd?: string;
   androidAvds: string[];
   androidApkUrl?: string;
   androidApkSha256?: string;
   androidAppPackage?: string;
   androidBootTimeoutSeconds: number;
+  androidEmulatorPath?: string;
   artifactsDir: string;
   allowedRepos: string[];
   browserUrl?: string;
@@ -49,6 +51,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     iosSimulatorUdids.push(env.URIEL_IOS_SIMULATOR_UDID.trim());
   }
   return {
+    androidAdbPath: env.URIEL_ANDROID_ADB_PATH?.trim() || undefined,
     androidAvd: androidAvds[0],
     androidAvds,
     androidApkUrl: env.URIEL_ANDROID_APK_URL?.trim() || undefined,
@@ -58,6 +61,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       1,
       Number.parseInt(env.URIEL_ANDROID_BOOT_TIMEOUT_SECONDS ?? "300", 10) || 300
     ),
+    androidEmulatorPath: env.URIEL_ANDROID_EMULATOR_PATH?.trim() || undefined,
     allowedRepos: parseCsv(env.URIEL_ALLOWED_REPOS),
     artifactsDir: env.URIEL_ARTIFACTS_DIR ?? `${stateDir}/artifacts`,
     browserUrl: env.URIEL_BROWSER_URL,

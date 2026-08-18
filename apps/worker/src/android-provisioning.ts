@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
+import { resolveAndroidTools } from "./android-tooling.ts";
 import type { WorkerConfig } from "./config.ts";
 import type { EvidenceRecorder } from "./evidence.ts";
 import type { JobReporter } from "./reporter.ts";
@@ -54,11 +55,20 @@ export async function provisionAndroidApp(
 ): Promise<void> {
   const provisioning = configuredAndroidProvisioning(config);
   if (!provisioning) return;
+  const adb = (await resolveAndroidTools(config)).adb;
+  if (!adb) {
+    throw new Error("Cannot provision the Android QA package because adb is not executable.");
+  }
 
   const cacheDir = join(config.stateDir, "android-apks");
   const deviceDir = join(config.stateDir, "android-devices", safePathSegment(serial));
   const markerPath = join(deviceDir, `${provisioning.sha256}.installed`);
-  const installedState = await adbPackageState(serial, provisioning.packageName, evidence);
+  const installedState = await adbPackageState(
+    adb.command,
+    serial,
+    provisioning.packageName,
+    evidence
+  );
   const recordedState = await readRecordedPackageState(markerPath);
   if (installedState && recordedState === installedState) {
     await reporter.event(
@@ -79,7 +89,7 @@ export async function provisionAndroidApp(
   );
   const install = await runObservedCommand(
     evidence,
-    "adb",
+    adb.command,
     ["-s", serial, "install", "-r", apkPath],
     { timeoutMs: 10 * 60_000 }
   );
@@ -88,7 +98,12 @@ export async function provisionAndroidApp(
       `Failed to install Android QA package on ${serial}: ${(install.stderr || install.stdout).trim()}`
     );
   }
-  const provisionedState = await adbPackageState(serial, provisioning.packageName, evidence);
+  const provisionedState = await adbPackageState(
+    adb.command,
+    serial,
+    provisioning.packageName,
+    evidence
+  );
   if (!provisionedState) {
     throw new Error(
       `APK install succeeded but ${provisioning.packageName} is not installed on ${serial}.`
@@ -183,13 +198,14 @@ async function sha256File(path: string): Promise<string> {
 }
 
 async function adbPackageState(
+  adbCommand: string,
   serial: string,
   packageName: string,
   evidence?: EvidenceRecorder
 ): Promise<string | undefined> {
   const pathResult = await runObservedCommand(
     evidence,
-    "adb",
+    adbCommand,
     ["-s", serial, "shell", "pm", "path", packageName],
     { timeoutMs: 30_000 }
   );
@@ -198,7 +214,7 @@ async function adbPackageState(
   }
   const packageResult = await runObservedCommand(
     evidence,
-    "adb",
+    adbCommand,
     ["-s", serial, "shell", "dumpsys", "package", packageName],
     { timeoutMs: 30_000 }
   );
