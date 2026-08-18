@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { runCommand } from "../apps/worker/src/shell.ts";
+import {
+  runCommand,
+  withCommandAbortSignal,
+  withoutCommandAbortSignal
+} from "../apps/worker/src/shell.ts";
 
 describe("bounded shell commands", () => {
   it("rejects a spawn failure without waiting for the timeout", async () => {
@@ -20,6 +24,48 @@ describe("bounded shell commands", () => {
     expect(result.stdout).toBe("out");
     expect(result.stderr).toBe("err");
   });
+
+  it("lets recovery commands escape an aborted job context", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await withCommandAbortSignal(controller.signal, () =>
+      withoutCommandAbortSignal(() =>
+        runCommand(process.execPath, ["-e", "process.stdout.write('cleanup')"])
+      )
+    );
+
+    expect(result).toMatchObject({ code: 0, stdout: "cleanup" });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "aborts the current contextual command process group",
+    async () => {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e',",
+        "  `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)`",
+        "], { stdio: ['ignore', 'inherit', 'inherit'] });",
+        "console.log(child.pid);",
+        "process.on('SIGTERM', () => {});",
+        "setInterval(() => {}, 1000);"
+      ].join("\n");
+      const controller = new AbortController();
+      const command = withCommandAbortSignal(controller.signal, () =>
+        runCommand(process.execPath, ["-e", script])
+      );
+      setTimeout(() => controller.abort(), 100);
+
+      const result = await command;
+      const descendantPid = Number.parseInt(result.stdout.trim(), 10);
+
+      expect(result.code).toBe(130);
+      expect(result.durationMs).toBeGreaterThanOrEqual(1_000);
+      expect(Number.isSafeInteger(descendantPid)).toBe(true);
+      await expectProcessToExit(descendantPid);
+    },
+    5_000
+  );
 
   it.skipIf(process.platform === "win32")(
     "kills the full process group and settles when a descendant inherits stdio",

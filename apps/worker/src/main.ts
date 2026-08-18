@@ -258,13 +258,23 @@ export async function handleRequest(
         });
         return;
       }
-      if (scheduler.jobs?.cancel(jobId)) {
+      const cancellation = scheduler.jobs?.cancel(jobId) ?? false;
+      if (cancellation === "queued") {
         await new LocalJobStore(config).appendEvent(
           jobId,
           createJobEvent("worker", "info", "Removed cancelled job from the scheduler queue.")
         );
+      } else if (cancellation === "active") {
+        await new LocalJobStore(config).appendEvent(
+          jobId,
+          createJobEvent(
+            "worker",
+            "info",
+            "Signalled the active job to abort; the runner owns cleanup."
+          )
+        );
       }
-      if (scheduler.cleanup) {
+      if (scheduler.cleanup && cancellation !== "active") {
         const actions = await scheduler.cleanup.cleanupJob(jobId, "job cancelled");
         await new LocalJobStore(config).appendEvent(
           jobId,
@@ -341,13 +351,13 @@ function requestsAndroidQa(qa: CreateJobRequest["qa"]): boolean {
 }
 
 function enqueueJob(job: Job, config: WorkerConfig): void {
-  scheduler.jobs?.enqueue(job.id, async () => {
+  scheduler.jobs?.enqueue(job.id, async (signal) => {
     const current = await new LocalJobStore(config).getJob(job.id);
-    if (current?.status !== "queued") return;
+    if (signal.aborted || current?.status !== "queued") return;
     const needsAndroid =
       config.enableAndroidQa &&
-      (job.qa === "android" || job.qa === "both" || job.qa === "all");
-    const needsIos = config.enableIosQa && (job.qa === "ios" || job.qa === "all");
+      (current.qa === "android" || current.qa === "both" || current.qa === "all");
+    const needsIos = config.enableIosQa && (current.qa === "ios" || current.qa === "all");
     const androidLease = needsAndroid ? await scheduler.androidSlots?.acquire() : undefined;
     const iosSimulatorLease = needsIos
       ? await scheduler.iosSimulatorSlots?.acquire()
@@ -360,15 +370,16 @@ function enqueueJob(job: Job, config: WorkerConfig): void {
         });
       }
       const leasedJob = await new LocalJobStore(config).getJob(job.id);
-      if (leasedJob?.status !== "queued") return;
-      await runJob(job, config, {
+      if (signal.aborted || leasedJob?.status !== "queued") return;
+      await runJob(leasedJob, config, {
         androidAvd: androidLease?.avd,
         capacityGate: async () => (scheduler.capacity ?? new HostCapacityGovernor(config)).evaluate({
           activeHeavyJobs: scheduler.jobs?.state().activeJobs ?? 1,
           queuedJobs: scheduler.jobs?.state().queuedJobs ?? 0
         }, { enforceWorkerLimit: false }),
         cleanup: scheduler.cleanup,
-        iosSimulatorUdid: iosSimulatorLease?.udid
+        iosSimulatorUdid: iosSimulatorLease?.udid,
+        signal
       });
     } finally {
       androidLease?.release();

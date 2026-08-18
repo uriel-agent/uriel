@@ -1,7 +1,9 @@
 interface PendingJob {
   jobId: string;
-  run(): Promise<void>;
+  run(signal: AbortSignal): Promise<void>;
 }
+
+export type SchedulerCancellation = "active" | "queued" | false;
 
 export interface SchedulerAdmissionContext {
   activeJobs: number;
@@ -41,6 +43,7 @@ export class JobScheduler {
   private blocked?: { jobId: string; reason: string };
   private draining = false;
   private readonly pending: PendingJob[] = [];
+  private readonly activeControllers = new Map<string, AbortController>();
   private retryTimer?: NodeJS.Timeout;
   private wakeRequested = false;
 
@@ -50,18 +53,23 @@ export class JobScheduler {
     private readonly options: JobSchedulerOptions = {}
   ) {}
 
-  enqueue(jobId: string, run: () => Promise<void>): void {
+  enqueue(jobId: string, run: (signal: AbortSignal) => Promise<void>): void {
     this.pending.push({ jobId, run });
     this.drain();
   }
 
-  cancel(jobId: string): boolean {
+  cancel(jobId: string): SchedulerCancellation {
     const index = this.pending.findIndex((job) => job.jobId === jobId);
-    if (index === -1) return false;
-    this.pending.splice(index, 1);
-    if (this.blocked?.jobId === jobId) this.blocked = undefined;
-    this.drain();
-    return true;
+    if (index !== -1) {
+      this.pending.splice(index, 1);
+      if (this.blocked?.jobId === jobId) this.blocked = undefined;
+      this.drain();
+      return "queued";
+    }
+    const controller = this.activeControllers.get(jobId);
+    if (!controller) return false;
+    controller.abort();
+    return "active";
   }
 
   state(): JobSchedulerState {
@@ -117,9 +125,12 @@ export class JobScheduler {
       }
       this.pending.shift();
       this.active += 1;
-      void job.run()
+      const controller = new AbortController();
+      this.activeControllers.set(job.jobId, controller);
+      void job.run(controller.signal)
         .catch(this.onError)
         .finally(() => {
+          this.activeControllers.delete(job.jobId);
           this.active -= 1;
           this.drain();
         });

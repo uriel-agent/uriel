@@ -81,6 +81,21 @@ describe("LocalJobStore restart recovery", () => {
     expect(persisted?.events).toHaveLength(26);
   });
 
+  it("keeps cancellation terminal when the runner reports later statuses", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "uriel-store-"));
+    temporaryDirectories.push(stateDir);
+    const store = new LocalJobStore(loadConfig({ URIEL_STATE_DIR: stateDir }));
+    const job = jobWithStatus("running");
+    await store.putJob(job);
+
+    await store.cancelJob(job.id);
+    await store.setStatus(job.id, "running");
+    await store.setStatus(job.id, "failed");
+    await store.setStatus(job.id, "completed");
+
+    expect((await store.getJob(job.id))?.status).toBe("cancelled");
+  });
+
   it("bounds terminal scheduled-smoke job history", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "uriel-store-"));
     temporaryDirectories.push(stateDir);
