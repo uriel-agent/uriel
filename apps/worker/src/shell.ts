@@ -25,9 +25,11 @@ export async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    const processGroup = process.platform !== "win32" &&
+      (Boolean(options.processGroup) || options.timeoutMs !== undefined);
     const child = spawn(command, args, {
       cwd: options.cwd,
-      detached: Boolean(options.processGroup && process.platform !== "win32"),
+      detached: processGroup,
       env: { ...process.env, ...options.env },
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -38,10 +40,41 @@ export async function runCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const timeout = options.timeoutMs
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let forceKill: NodeJS.Timeout | undefined;
+    let forceSettle: NodeJS.Timeout | undefined;
+    const settle = (code: number, error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (forceKill) clearTimeout(forceKill);
+      if (forceSettle) clearTimeout(forceSettle);
+      void spawnRegistration.then(
+        () => error
+          ? reject(error)
+          : resolve({ code, durationMs: Date.now() - startedAt, stderr, stdout }),
+        reject
+      );
+    };
+    timeout = options.timeoutMs
       ? setTimeout(() => {
-          killChild(child, options.processGroup, "SIGTERM");
-          setTimeout(() => killChild(child, options.processGroup, "SIGKILL"), 1000).unref();
+          timedOut = true;
+          killChild(child, processGroup, "SIGTERM");
+          forceKill = setTimeout(() => {
+            killChild(child, processGroup, "SIGKILL");
+            child.stdout.destroy();
+            child.stderr.destroy();
+          }, 1000);
+          forceKill.unref();
+          forceSettle = setTimeout(() => {
+            child.stdin.destroy();
+            child.stdout.destroy();
+            child.stderr.destroy();
+            child.unref();
+            settle(124);
+          }, 1500);
+          forceSettle.unref();
         }, options.timeoutMs)
       : undefined;
 
@@ -54,27 +87,10 @@ export async function runCommand(
       stderr += chunk;
     });
     child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-      reject(error);
+      settle(1, error);
     });
     child.on("close", (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-      void spawnRegistration.then(
-        () => resolve({ code: code ?? 1, durationMs: Date.now() - startedAt, stderr, stdout }),
-        reject
-      );
+      settle(timedOut ? 124 : code ?? 1);
     });
     if (options.input) {
       child.stdin.write(options.input);
@@ -85,11 +101,11 @@ export async function runCommand(
 
 function killChild(
   child: import("node:child_process").ChildProcess,
-  processGroup: boolean | undefined,
+  processGroup: boolean,
   signal: NodeJS.Signals
 ): void {
   try {
-    if (processGroup && process.platform !== "win32" && child.pid) {
+    if (processGroup && child.pid) {
       process.kill(-child.pid, signal);
     } else {
       child.kill(signal);
