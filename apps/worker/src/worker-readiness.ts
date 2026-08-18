@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { configuredAndroidProvisioning } from "./android-provisioning.ts";
 import {
+  checkAndroidEmulatorAcceleration,
   listAttachedAndroidAvds,
   resolveAndroidTools,
   type AndroidToolResolution
@@ -103,7 +104,6 @@ async function checkAvds(
 
   const attachedNames = new Set(attachedAvds.map(({ avd }) => avd));
   const unattachedNames = config.androidAvds.filter((avd) => !attachedNames.has(avd));
-  const canBootOnHost = process.platform === "darwin" || await exists("/dev/kvm");
 
   if (!tools.emulator) {
     checks.push({
@@ -149,17 +149,18 @@ async function checkAvds(
     status: listResult.code === 0 && missingAvds.length === 0 ? "pass" : "fail"
   });
 
+  const acceleration = await checkAndroidEmulatorAcceleration(tools.emulator.command);
   checks.push({
-    detail: canBootOnHost
-      ? "The host can cold-boot unattached Android AVDs."
+    detail: acceleration.ok
+      ? `The emulator reports usable acceleration: ${acceleration.detail}`
       : unattachedNames.length === 0
-        ? "Hardware acceleration is unavailable, but all configured AVDs are currently attached."
-        : `Hardware acceleration is unavailable and these AVDs require a boot: ${unattachedNames.join(", ")}.`,
+        ? `Emulator acceleration is unavailable, but all configured AVDs are currently attached: ${acceleration.detail}`
+        : `Emulator acceleration is unavailable and these AVDs require a boot: ${unattachedNames.join(", ")}. ${acceleration.detail}`,
     id: "android.emulator.boot-capability",
-    remediation: canBootOnHost
+    remediation: acceleration.ok
       ? undefined
-      : "Restore /dev/kvm access or keep the dedicated AVDs supervised and attached.",
-    status: canBootOnHost ? "pass" : unattachedNames.length === 0 ? "warn" : "fail"
+      : "Run `emulator -accel-check` and repair the host hypervisor/KVM configuration before accepting cold boots.",
+    status: acceleration.ok ? "pass" : unattachedNames.length === 0 ? "warn" : "fail"
   });
 }
 

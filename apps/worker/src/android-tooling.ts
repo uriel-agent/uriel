@@ -24,6 +24,11 @@ export interface AttachedAndroidAvd {
   serial: string;
 }
 
+export interface AndroidEmulatorAcceleration {
+  detail: string;
+  ok: boolean;
+}
+
 type AndroidToolConfig = Pick<
   WorkerConfig,
   "androidAdbPath" | "androidEmulatorPath"
@@ -80,6 +85,21 @@ export async function listAttachedAndroidAvds(
     if (avd) avds.push({ avd, serial });
   }
   return { avds, devices };
+}
+
+export async function checkAndroidEmulatorAcceleration(
+  emulatorCommand: string
+): Promise<AndroidEmulatorAcceleration> {
+  try {
+    const result = await runCommand(emulatorCommand, ["-accel-check"], { timeoutMs: 30_000 });
+    const detail = (result.stdout || result.stderr).trim();
+    return {
+      detail: detail || `emulator -accel-check exited ${result.code}`,
+      ok: result.code === 0
+    };
+  } catch (error) {
+    return { detail: errorMessage(error), ok: false };
+  }
 }
 
 export function parseAdbDeviceSerials(output: string): string[] {

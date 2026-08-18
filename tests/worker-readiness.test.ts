@@ -138,6 +138,22 @@ describe("worker readiness", () => {
     }));
   });
 
+  it("does not infer cold-boot capability when the emulator acceleration check fails", async () => {
+    const config = await readyConfig({ acceleration: false, attached: false });
+    const baseUrl = await startWorker(config);
+
+    const response = await authorizedReady(baseUrl);
+    const body = await response.json() as {
+      checks: Array<{ id: string; status: string }>;
+    };
+
+    expect(response.status).toBe(503);
+    expect(body.checks).toContainEqual(expect.objectContaining({
+      id: "android.emulator.boot-capability",
+      status: "fail"
+    }));
+  });
+
   it("returns 503 with remediation when APK provisioning is invalid", async () => {
     const config = await readyConfig();
     config.androidApkUrl = "file:///missing/qa.apk";
@@ -161,6 +177,7 @@ describe("worker readiness", () => {
 
 async function readyConfig(
   options: {
+    acceleration?: boolean;
     adbResponsive?: boolean;
     attached?: boolean;
     brokenEmulator?: boolean;
@@ -189,6 +206,9 @@ exit 1`
     : await executable(
       join(root, "bin", "emulator"),
       `if [ "\${1:-}" = "-list-avds" ]; then echo ${options.listedAvd ?? "qa-1"}; exit 0; fi
+if [ "\${1:-}" = "-accel-check" ]; then
+  ${options.acceleration === false ? 'echo "acceleration unavailable" >&2\n  exit 1' : 'echo "accel: usable"\n  exit 0'}
+fi
 exit 1`
     );
   return loadConfig({

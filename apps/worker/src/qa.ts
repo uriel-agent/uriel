@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Job } from "../../../packages/core/src/index.ts";
-import { parseAdbDeviceSerials, resolveAndroidTools } from "./android-tooling.ts";
+import {
+  checkAndroidEmulatorAcceleration,
+  parseAdbDeviceSerials,
+  resolveAndroidTools
+} from "./android-tooling.ts";
 import type { WorkerConfig } from "./config.ts";
 import type { EvidenceRecorder } from "./evidence.ts";
 import type { JobReporter } from "./reporter.ts";
@@ -264,15 +268,6 @@ export async function ensureAndroidDevice(
   }
   const adbCommand = tools.adb.command;
 
-  const canBootEmulator = (await exists("/dev/kvm")) || process.platform === "darwin";
-  if (!canBootEmulator) {
-    await reporter.event(
-      "qa",
-      "info",
-      "/dev/kvm is unavailable; relying on an already-booted emulator or attached device."
-    );
-  }
-
   await runObservedCommand(evidence, adbCommand, ["start-server"], { timeoutMs: 30_000 });
 
   let serial: string | undefined;
@@ -280,12 +275,18 @@ export async function ensureAndroidDevice(
     await reporter.event("qa", "info", `Ensuring Android AVD ${requestedAvd} is booted.`);
     serial = await serialForAvd(requestedAvd, adbCommand, evidence);
     if (!serial) {
-      if (!canBootEmulator || !tools.emulator) {
+      const acceleration = tools.emulator
+        ? await checkAndroidEmulatorAcceleration(tools.emulator.command)
+        : undefined;
+      if (!tools.emulator || !acceleration?.ok) {
         await reporter.event(
           "qa",
           "warn",
           `Android AVD ${requestedAvd} is not attached and this host cannot boot it.`,
-          { checked: tools.emulatorCandidates }
+          {
+            checked: tools.emulatorCandidates,
+            ...(acceleration ? { acceleration: acceleration.detail } : {})
+          }
         );
         return undefined;
       }
