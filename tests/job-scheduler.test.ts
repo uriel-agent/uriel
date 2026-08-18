@@ -37,4 +37,87 @@ describe("JobScheduler", () => {
     expect(onError).toHaveBeenCalledWith(error);
     expect(nextRun).toHaveBeenCalledOnce();
   });
+
+  it("keeps jobs FIFO while pressure blocks the head and wakes on recovery", async () => {
+    let available = false;
+    const order: string[] = [];
+    const onBlocked = vi.fn();
+    const onUnblocked = vi.fn();
+    const scheduler = new JobScheduler(2, () => undefined, {
+      admission: async () => ({
+        admitted: available,
+        ...(available ? {} : { reason: "memory reserve" })
+      }),
+      onBlocked,
+      onUnblocked,
+      retryDelayMs: 5
+    });
+
+    scheduler.enqueue("first", async () => { order.push("first"); });
+    scheduler.enqueue("second", async () => { order.push("second"); });
+    await wait(10);
+
+    expect(order).toEqual([]);
+    expect(scheduler.state()).toMatchObject({
+      blocked: { jobId: "first", reason: "memory reserve" },
+      queuedJobs: 2
+    });
+    expect(onBlocked).toHaveBeenCalledOnce();
+
+    available = true;
+    await wait(20);
+
+    expect(order).toEqual(["first", "second"]);
+    expect(onUnblocked).toHaveBeenCalledOnce();
+    expect(scheduler.state()).toMatchObject({ activeJobs: 0, queuedJobs: 0 });
+  });
+
+  it("treats admission probe failures as temporary pressure", async () => {
+    let attempts = 0;
+    const run = vi.fn(async () => undefined);
+    const onBlocked = vi.fn();
+    const scheduler = new JobScheduler(1, () => undefined, {
+      admission: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("probe unavailable");
+        return { admitted: true };
+      },
+      onBlocked,
+      retryDelayMs: 5
+    });
+
+    scheduler.enqueue("job", run);
+    await wait(20);
+
+    expect(onBlocked).toHaveBeenCalledWith("job", expect.objectContaining({
+      admitted: false,
+      reason: "capacity admission check failed: probe unavailable"
+    }));
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("still retries when blocked-event reporting fails", async () => {
+    let available = false;
+    const run = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const scheduler = new JobScheduler(1, onError, {
+      admission: async () => ({ admitted: available, reason: "disk reserve" }),
+      onBlocked: async () => { throw new Error("event store unavailable"); },
+      retryDelayMs: 5
+    });
+
+    scheduler.enqueue("job", run);
+    await wait(10);
+    available = true;
+    await wait(20);
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "event store unavailable"
+    }));
+    expect(run).toHaveBeenCalledOnce();
+  });
 });
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

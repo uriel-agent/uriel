@@ -120,6 +120,36 @@ in
       description = "Maximum number of jobs the local worker may run at once.";
     };
 
+    maxHeavyJobs = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
+      description = "Maximum heavy jobs admitted at once, clamped by total jobs and Android slots.";
+    };
+
+    capacityMinFreeMemoryMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 4096;
+      description = "Minimum available host memory in MiB required to launch heavy work.";
+    };
+
+    capacityMaxSwapUsedMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 32768;
+      description = "Maximum host swap usage in MiB allowed when launching heavy work.";
+    };
+
+    capacityMinFreeDiskMb = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 20480;
+      description = "Minimum free disk space in MiB required to launch heavy work.";
+    };
+
+    capacityRetrySeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 15;
+      description = "Delay before retrying a job blocked by host resource pressure.";
+    };
+
     callbackTimeoutSeconds = lib.mkOption {
       type = lib.types.ints.positive;
       default = 60;
@@ -284,7 +314,12 @@ in
         URIEL_ANDROID_AVD_PREFIX = cfg.androidAvdPrefix;
         URIEL_ENABLE_ANDROID_QA = if cfg.enableAndroidQa then "true" else "false";
         URIEL_ENABLE_BROWSER_QA = if cfg.enableBrowserQa then "true" else "false";
+        URIEL_CAPACITY_MAX_SWAP_USED_MB = toString cfg.capacityMaxSwapUsedMb;
+        URIEL_CAPACITY_MIN_FREE_DISK_MB = toString cfg.capacityMinFreeDiskMb;
+        URIEL_CAPACITY_MIN_FREE_MEMORY_MB = toString cfg.capacityMinFreeMemoryMb;
+        URIEL_CAPACITY_RETRY_SECONDS = toString cfg.capacityRetrySeconds;
         URIEL_MAX_CONCURRENT_JOBS = toString cfg.maxConcurrentJobs;
+        URIEL_MAX_HEAVY_JOBS = toString cfg.maxHeavyJobs;
         URIEL_CALLBACK_TIMEOUT_SECONDS = toString cfg.callbackTimeoutSeconds;
         URIEL_STATE_DIR = toString cfg.stateDir;
         URIEL_WORKER_HOST = cfg.host;

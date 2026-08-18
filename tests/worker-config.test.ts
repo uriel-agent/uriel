@@ -18,7 +18,12 @@ describe("worker config", () => {
       URIEL_ANDROID_APP_PACKAGE: "com.example.qa",
       URIEL_ANDROID_BOOT_TIMEOUT_SECONDS: "420",
       URIEL_ANDROID_EMULATOR_PATH: "/opt/android/emulator/emulator",
+      URIEL_CAPACITY_MAX_SWAP_USED_MB: "8192",
+      URIEL_CAPACITY_MIN_FREE_DISK_MB: "10240",
+      URIEL_CAPACITY_MIN_FREE_MEMORY_MB: "3072",
+      URIEL_CAPACITY_RETRY_SECONDS: "9",
       URIEL_MAX_CONCURRENT_JOBS: "3",
+      URIEL_MAX_HEAVY_JOBS: "3",
       URIEL_STATE_DIR: "/tmp/uriel"
     });
 
@@ -39,7 +44,25 @@ describe("worker config", () => {
     expect(config.androidAppPackage).toBe("com.example.qa");
     expect(config.androidBootTimeoutSeconds).toBe(420);
     expect(config.androidEmulatorPath).toBe("/opt/android/emulator/emulator");
+    expect(config.capacityMaxSwapUsedMb).toBe(8192);
+    expect(config.capacityMinFreeDiskMb).toBe(10240);
+    expect(config.capacityMinFreeMemoryMb).toBe(3072);
+    expect(config.capacityRetrySeconds).toBe(9);
     expect(config.maxConcurrentJobs).toBe(3);
+    expect(config.maxHeavyJobs).toBe(2);
+  });
+
+  it("clamps heavy concurrency to total jobs and dedicated Android slots", () => {
+    expect(loadConfig({
+      URIEL_ANDROID_AVDS: "uriel_1,uriel_2",
+      URIEL_MAX_CONCURRENT_JOBS: "5",
+      URIEL_MAX_HEAVY_JOBS: "4"
+    }).maxHeavyJobs).toBe(2);
+    expect(loadConfig({
+      URIEL_ANDROID_AVDS: "uriel_1,uriel_2",
+      URIEL_MAX_CONCURRENT_JOBS: "1",
+      URIEL_MAX_HEAVY_JOBS: "4"
+    }).maxHeavyJobs).toBe(1);
   });
 
   it("keeps the single Android AVD as a backwards-compatible slot", () => {

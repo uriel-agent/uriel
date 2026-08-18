@@ -13,6 +13,10 @@ export interface WorkerConfig {
   browserUrl?: string;
   callbackSecret?: string;
   callbackTimeoutSeconds: number;
+  capacityMaxSwapUsedMb: number;
+  capacityMinFreeDiskMb: number;
+  capacityMinFreeMemoryMb: number;
+  capacityRetrySeconds: number;
   claudeModel?: string;
   codexEffort?: string;
   codexModel?: string;
@@ -33,6 +37,7 @@ export interface WorkerConfig {
   iosSimulatorUdids: string[];
   opencodeModel?: string;
   maxConcurrentJobs: number;
+  maxHeavyJobs: number;
   port: number;
   repoBootstrapAdapter?: string;
   reposDir: string;
@@ -51,6 +56,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   if (iosSimulatorUdids.length === 0 && env.URIEL_IOS_SIMULATOR_UDID?.trim()) {
     iosSimulatorUdids.push(env.URIEL_IOS_SIMULATOR_UDID.trim());
   }
+  const maxConcurrentJobs = positiveInteger(env.URIEL_MAX_CONCURRENT_JOBS, 1);
+  const requestedMaxHeavyJobs = positiveInteger(env.URIEL_MAX_HEAVY_JOBS, 1);
+  const androidSlotCap = new Set(androidAvds).size || 1;
   return {
     androidAdbPath: env.URIEL_ANDROID_ADB_PATH?.trim() || undefined,
     androidAvd: androidAvds[0],
@@ -72,6 +80,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       1,
       Number.parseInt(env.URIEL_CALLBACK_TIMEOUT_SECONDS ?? "60", 10) || 60
     ),
+    capacityMaxSwapUsedMb: positiveInteger(env.URIEL_CAPACITY_MAX_SWAP_USED_MB, 32 * 1024),
+    capacityMinFreeDiskMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_DISK_MB, 20 * 1024),
+    capacityMinFreeMemoryMb: positiveInteger(env.URIEL_CAPACITY_MIN_FREE_MEMORY_MB, 4 * 1024),
+    capacityRetrySeconds: positiveInteger(env.URIEL_CAPACITY_RETRY_SECONDS, 15),
     claudeModel: env.URIEL_CLAUDE_MODEL,
     codexEffort: env.URIEL_CODEX_EFFORT,
     codexModel: env.URIEL_CODEX_MODEL,
@@ -96,7 +108,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     iosSimulatorName: env.URIEL_IOS_SIMULATOR_NAME?.trim() || undefined,
     iosSimulatorUdid: iosSimulatorUdids[0],
     iosSimulatorUdids,
-    maxConcurrentJobs: Math.max(1, Number.parseInt(env.URIEL_MAX_CONCURRENT_JOBS ?? "1", 10) || 1),
+    maxConcurrentJobs,
+    maxHeavyJobs: Math.min(requestedMaxHeavyJobs, maxConcurrentJobs, androidSlotCap),
     opencodeModel: env.OPENCODE_MODEL,
     port: Number.parseInt(env.URIEL_WORKER_PORT ?? "8788", 10),
     repoBootstrapAdapter: env.URIEL_ADAPTER_REPO_BOOTSTRAP,
@@ -105,6 +118,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workerToken: env.URIEL_WORKER_TOKEN,
     worktreesDir: env.URIEL_WORKTREES_DIR ?? `${stateDir}/worktrees`
   };
+}
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  return Math.max(1, Number.parseInt(value ?? String(fallback), 10) || fallback);
 }
 
 function parseCsv(value: string | undefined): string[] {
