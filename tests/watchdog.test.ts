@@ -122,4 +122,40 @@ describe("ReadinessWatchdog", () => {
     expect(recover).toHaveBeenCalledOnce();
     expect(watchdog.snapshot().lastRecordError).toBe("history disk full");
   });
+
+  it("aborts and records a bounded fallback when a probe exceeds its deadline", async () => {
+    let signal: AbortSignal | undefined;
+    const timeoutProbe: WatchdogProbe = {
+      actionable: false,
+      causes: ["watchdog.probe.timeout: readiness probe exceeded its deadline"],
+      excludedReason: "job-load",
+      status: "not-ready"
+    };
+    const record = vi.fn(async (_probe: WatchdogProbe, _at: string) => undefined);
+    const watchdog = new ReadinessWatchdog({
+      alert: vi.fn(async () => undefined),
+      cooldownMs: 1,
+      intervalMs: 30,
+      probe: async (probeSignal) => {
+        signal = probeSignal;
+        return new Promise<WatchdogProbe>((_resolve, reject) => {
+          probeSignal?.addEventListener("abort", () => reject(new Error("probe aborted")), { once: true });
+        });
+      },
+      probeTimeoutMs: 10,
+      record,
+      recover: vi.fn(async () => undefined),
+      threshold: 1,
+      timeoutProbe: () => timeoutProbe
+    });
+
+    await watchdog.tick(1_000);
+
+    expect(signal?.aborted).toBe(true);
+    expect(record).toHaveBeenCalledWith(timeoutProbe, "1970-01-01T00:00:01.000Z");
+    expect(watchdog.snapshot()).toMatchObject({
+      consecutiveDegraded: 1,
+      lastStatus: "not-ready"
+    });
+  });
 });
