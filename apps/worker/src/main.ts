@@ -25,7 +25,7 @@ import { HostCapacityGovernor, type HostCapacityDecision } from "./host-capacity
 import { JobReporter } from "./reporter.ts";
 import { ReadinessHistory } from "./readiness-history.ts";
 import { runJob, sendJobCallback } from "./runner.ts";
-import { runCommand } from "./shell.ts";
+import { runCommand, withCommandAbortSignal } from "./shell.ts";
 import { appendWatchdogAlert, SmokeCoordinator } from "./smoke.ts";
 import { LocalJobStore } from "./store.ts";
 import { checkWorkerReadiness } from "./worker-readiness.ts";
@@ -464,11 +464,12 @@ async function workerTelemetry(config: WorkerConfig, windowMs = 24 * 60 * 60 * 1
 }
 
 function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
+  const intervalMs = config.watchdogIntervalSeconds * 1_000;
   return new ReadinessWatchdog({
     alert: async (probe) => appendWatchdogAlert(config, probe),
     cooldownMs: config.watchdogCooldownSeconds * 1_000,
-    intervalMs: config.watchdogIntervalSeconds * 1_000,
-    probe: async () => {
+    intervalMs,
+    probe: async (signal) => withCommandAbortSignal(signal, async () => {
       const readiness = await currentReadiness(config);
       const state = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
       const excludedReason = maintenance.owner
@@ -484,7 +485,8 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
         ...(excludedReason ? { excludedReason } : {}),
         status: readiness.status
       };
-    },
+    }),
+    probeTimeoutMs: Math.max(1_000, intervalMs - 5_000),
     record: async (probe, at) => {
       await scheduler.readinessHistory?.record(probe, at);
     },
@@ -506,7 +508,21 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
         scheduler.jobs?.wake();
       }
     },
-    threshold: config.watchdogFailureThreshold
+    threshold: config.watchdogFailureThreshold,
+    timeoutProbe: (timeoutMs) => {
+      const state = scheduler.jobs?.state() ?? { activeJobs: 0, queuedJobs: 0 };
+      const excludedReason = maintenance.owner
+        ? `${maintenance.owner}-maintenance`
+        : state.activeJobs > 0 || state.queuedJobs > 0
+          ? "job-load"
+          : undefined;
+      return {
+        actionable: !excludedReason,
+        causes: [`watchdog.probe.timeout: readiness probe exceeded its ${timeoutMs} ms deadline`],
+        ...(excludedReason ? { excludedReason } : {}),
+        status: "not-ready"
+      };
+    }
   });
 }
 

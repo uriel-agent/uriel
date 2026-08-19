@@ -19,10 +19,12 @@ export interface ReadinessWatchdogOptions {
   alert(probe: WatchdogProbe): Promise<void>;
   cooldownMs: number;
   intervalMs: number;
-  probe(): Promise<WatchdogProbe>;
+  probe(signal?: AbortSignal): Promise<WatchdogProbe>;
+  probeTimeoutMs?: number;
   record?(probe: WatchdogProbe, at: string): Promise<void>;
   recover(probe: WatchdogProbe): Promise<void>;
   threshold: number;
+  timeoutProbe?(timeoutMs: number): WatchdogProbe;
 }
 
 export class ReadinessWatchdog {
@@ -64,7 +66,7 @@ export class ReadinessWatchdog {
     if (this.running) return;
     this.running = true;
     try {
-      const probe = await this.options.probe();
+      const probe = await this.probe();
       this.lastProbeAt = new Date(now).toISOString();
       this.lastStatus = probe.status;
       await this.record(probe, this.lastProbeAt);
@@ -78,7 +80,7 @@ export class ReadinessWatchdog {
       if (this.lastRecoveryAt && now - lastRecovery < this.options.cooldownMs) return;
       await this.options.recover(probe);
       this.lastRecoveryAt = new Date(now).toISOString();
-      const afterRecovery = await this.options.probe();
+      const afterRecovery = await this.probe();
       const afterRecoveryAt = new Date(Math.max(now + 1, Date.now())).toISOString();
       this.lastProbeAt = afterRecoveryAt;
       this.lastStatus = afterRecovery.status;
@@ -92,6 +94,31 @@ export class ReadinessWatchdog {
       this.lastAlertAt = new Date(now).toISOString();
     } finally {
       this.running = false;
+    }
+  }
+
+  private async probe(): Promise<WatchdogProbe> {
+    const timeoutMs = this.options.probeTimeoutMs;
+    if (!timeoutMs) return this.options.probe();
+
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.options.probe(controller.signal),
+        new Promise<WatchdogProbe>((resolve) => {
+          timer = setTimeout(() => {
+            resolve(this.options.timeoutProbe?.(timeoutMs) ?? {
+              actionable: true,
+              causes: [`readiness probe exceeded its ${timeoutMs} ms deadline`],
+              status: "not-ready"
+            });
+            controller.abort();
+          }, timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
