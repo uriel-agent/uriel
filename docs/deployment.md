@@ -79,6 +79,10 @@ Useful NixOS module knobs:
 - `androidApk`: optionally downloads, verifies, caches, and installs a pinned
   QA APK before the coding harness starts. Its URL may use `file://` for an
   operator-managed host-local artifact.
+- `URIEL_ANDROID_APK_FINGERPRINT` plus `URIEL_ANDROID_COMPAT_FILE` in an
+  environment file: optionally fail Android jobs when the provisioned APK's
+  40-character fingerprint is absent from the repository-relative JSON
+  compatibility file at the checked-out revision.
 - `extraPackages`: adds repo-specific tools to the worker service `PATH`.
 
 Deploy the host:

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handleRequest } from "../apps/worker/src/main.ts";
 import { loadConfig } from "../apps/worker/src/config.ts";
@@ -80,6 +80,32 @@ describe("POST /jobs/:id/cancel", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "Job not found." });
   });
+
+  it("delivers a callback for a queued cancellation", async () => {
+    const callbackBodies: Array<{ job: Job; summary: string }> = [];
+    const callbackUrl = await startCallbackServer(callbackBodies);
+    const { baseUrl, store } = await startWorker();
+    const job = jobWithStatus("queued");
+    job.callbackUrl = callbackUrl;
+    job.checkResults = [{ artifacts: [], evidence: [], id: "app.loaded", verdict: "pass" }];
+    await store.putJob(job);
+
+    const response = await fetch(`${baseUrl}/jobs/${job.id}/cancel`, {
+      method: "POST"
+    });
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(async () => {
+      expect((await store.getJob(job.id))?.callbackDeliveredAt).toEqual(
+        expect.any(String)
+      );
+    });
+    expect(callbackBodies).toHaveLength(1);
+    expect(callbackBodies[0]).toMatchObject({
+      job: { id: job.id, status: "cancelled" },
+      summary: "Job cancelled."
+    });
+  });
 });
 
 describe("POST /jobs Android ownership gate", () => {
@@ -144,6 +170,26 @@ async function closeServer(server: Server): Promise<void> {
       else resolve();
     });
   });
+}
+
+async function startCallbackServer(
+  bodies: Array<{ job: Job; summary: string }>
+): Promise<string> {
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += String(chunk);
+    bodies.push(JSON.parse(body) as { job: Job; summary: string });
+    response.writeHead(204).end();
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Callback test server did not bind to a TCP port.");
+  }
+  return `http://127.0.0.1:${address.port}/callback`;
 }
 
 function jobWithStatus(status: Job["status"]): Job {

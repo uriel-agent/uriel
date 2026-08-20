@@ -13,9 +13,11 @@ describe("worker config", () => {
       URIEL_ANDROID_ADB_PATH: "/opt/android/platform-tools/adb",
       URIEL_ANDROID_AVD_PREFIX: "worker_",
       URIEL_ANDROID_AVDS: "worker_1, worker_2,worker_1",
+      URIEL_ANDROID_APK_FINGERPRINT: "A".repeat(40),
       URIEL_ANDROID_APK_SHA256: "a".repeat(64),
       URIEL_ANDROID_APK_URL: "https://example.test/app.apk",
       URIEL_ANDROID_APP_PACKAGE: "com.example.qa",
+      URIEL_ANDROID_COMPAT_FILE: "config/android-compat.json",
       URIEL_ANDROID_BOOT_TIMEOUT_SECONDS: "420",
       URIEL_ANDROID_EMULATOR_PATH: "/opt/android/emulator/emulator",
       URIEL_ARTIFACT_RETENTION_DAYS: "5",
@@ -52,9 +54,11 @@ describe("worker config", () => {
     expect(config.androidAvdPrefix).toBe("worker_");
     expect(config.androidAvds).toEqual(["worker_1", "worker_2", "worker_1"]);
     expect(config.androidAvd).toBe("worker_1");
+    expect(config.androidApkFingerprint).toBe("a".repeat(40));
     expect(config.androidApkSha256).toBe("a".repeat(64));
     expect(config.androidApkUrl).toBe("https://example.test/app.apk");
     expect(config.androidAppPackage).toBe("com.example.qa");
+    expect(config.androidCompatFile).toBe("config/android-compat.json");
     expect(config.androidBootTimeoutSeconds).toBe(420);
     expect(config.androidEmulatorPath).toBe("/opt/android/emulator/emulator");
     expect(config.artifactRetentionDays).toBe(5);

@@ -23,6 +23,7 @@ import {
   configuredAndroidProvisioning,
   provisionAndroidApp
 } from "./android-provisioning.ts";
+import { assertProvisionedAndroidApkCompatible } from "./android-compatibility.ts";
 import {
   androidDeviceGrantEnvironment,
   buildAndroidDeviceGrant
@@ -47,7 +48,7 @@ import {
   withCommandAbortSignal,
   withoutCommandAbortSignal
 } from "./shell.ts";
-import { LocalJobStore } from "./store.ts";
+import { isTerminalJobStatus, LocalJobStore } from "./store.ts";
 
 interface JobRuntime {
   androidAvd?: string;
@@ -110,6 +111,8 @@ async function runJobInternal(
     await assertJobActive(store, job.id, runtime.signal);
 
     const worktree = await prepareWorktree(job, config, reporter, evidence, ledger);
+    await assertJobActive(store, job.id, runtime.signal);
+    await assertProvisionedAndroidApkCompatible(job, config, worktree, reporter);
     await assertJobActive(store, job.id, runtime.signal);
     await inspectRepository(worktree, artifactsDir, reporter, evidence);
     await assertJobActive(store, job.id, runtime.signal);
@@ -832,11 +835,17 @@ export async function sendJobCallback(
   fallbackJob: Job,
   config: WorkerConfig,
   reporter: JobReporter,
-  summary: string
+  summary: string,
+  options: { retryDelaysMs?: readonly number[] } = {}
 ): Promise<void> {
   try {
-    const job = (await reporter.getJob()) ?? fallbackJob;
+    let job = (await reporter.getJob()) ?? fallbackJob;
     if (!job.callbackUrl) {
+      return;
+    }
+    const callbackUrl = job.callbackUrl;
+    job = (await new LocalJobStore(config).setCallbackSummary(job.id, summary)) ?? job;
+    if (job.callbackDeliveredAt) {
       return;
     }
 
@@ -853,7 +862,7 @@ export async function sendJobCallback(
     const signature = config.callbackSecret
       ? await signPayloadSha256(config.callbackSecret, body)
       : undefined;
-    const delays = [0, 5_000, 30_000];
+    const delays = options.retryDelaysMs ?? [0, 5_000, 30_000];
     for (const [index, delayMs] of delays.entries()) {
       if (delayMs > 0) {
         await delay(delayMs);
@@ -864,7 +873,7 @@ export async function sendJobCallback(
         config.callbackTimeoutSeconds * 1_000
       );
       try {
-        const response = await fetch(job.callbackUrl, {
+        const response = await fetch(callbackUrl, {
           body,
           headers: {
             "content-type": "application/json",
@@ -878,6 +887,7 @@ export async function sendJobCallback(
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
+        await new LocalJobStore(config).markCallbackDelivered(job.id);
         return;
       } catch (error) {
         await callbackEvent(
@@ -889,7 +899,11 @@ export async function sendJobCallback(
         clearTimeout(timeout);
       }
     }
-    await callbackEvent(reporter, "error", "Job callback failed after 3 attempts.");
+    await callbackEvent(
+      reporter,
+      "error",
+      `Job callback failed after ${delays.length} attempts.`
+    );
   } catch (error) {
     await callbackEvent(
       reporter,
@@ -897,6 +911,41 @@ export async function sendJobCallback(
       `Job callback could not be sent: ${errorMessage(error)}`
     );
   }
+}
+
+export async function replayUndeliveredJobCallbacks(
+  config: WorkerConfig,
+  store = new LocalJobStore(config)
+): Promise<void> {
+  const pending = (await store.listJobs()).filter(
+    (job) =>
+      isTerminalJobStatus(job.status) &&
+      Boolean(job.callbackUrl) &&
+      !job.callbackDeliveredAt
+  );
+  for (const job of pending) {
+    // Callback receivers use the job id as their idempotency key, so replaying
+    // after a crash between a 2xx response and persistence is safe.
+    await sendJobCallback(
+      job,
+      config,
+      new JobReporter({ jobId: job.id, store }),
+      job.callbackSummary ?? terminalCallbackSummary(job)
+    );
+  }
+}
+
+function terminalCallbackSummary(job: Job): string {
+  if (job.status === "completed") return "Job completed.";
+  if (job.status === "cancelled") return "Job cancelled.";
+  const failure = [...job.events]
+    .reverse()
+    .find(
+      (event) =>
+        event.level === "error" &&
+        !event.message.startsWith("Job callback")
+    );
+  return failure?.message ?? "Job failed.";
 }
 
 async function callbackEvent(
