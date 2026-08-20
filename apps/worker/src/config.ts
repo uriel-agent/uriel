@@ -3,9 +3,11 @@ export interface WorkerConfig {
   androidAvd?: string;
   androidAvdPrefix: string;
   androidAvds: string[];
+  androidApkFingerprint?: string;
   androidApkUrl?: string;
   androidApkSha256?: string;
   androidAppPackage?: string;
+  androidCompatFile?: string;
   androidBootTimeoutSeconds: number;
   androidEmulatorPath?: string;
   artifactsDir: string;
@@ -78,9 +80,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     androidAvd: androidAvds[0],
     androidAvdPrefix: env.URIEL_ANDROID_AVD_PREFIX?.trim() || "uriel_",
     androidAvds,
+    androidApkFingerprint: env.URIEL_ANDROID_APK_FINGERPRINT?.trim().toLowerCase() || undefined,
     androidApkUrl: env.URIEL_ANDROID_APK_URL?.trim() || undefined,
     androidApkSha256: env.URIEL_ANDROID_APK_SHA256?.trim().toLowerCase() || undefined,
     androidAppPackage: env.URIEL_ANDROID_APP_PACKAGE?.trim() || undefined,
+    androidCompatFile: env.URIEL_ANDROID_COMPAT_FILE?.trim() || undefined,
     androidBootTimeoutSeconds: Math.max(
       1,
       Number.parseInt(env.URIEL_ANDROID_BOOT_TIMEOUT_SECONDS ?? "300", 10) || 300

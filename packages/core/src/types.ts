@@ -82,6 +82,8 @@ export interface Job {
   approvals: ApprovalRequest[];
   artifacts: Artifact[];
   branch: string;
+  callbackDeliveredAt?: string;
+  callbackSummary?: string;
   callbackUrl?: string;
   checkResults?: CheckResult[];
   checks?: JobCheck[];

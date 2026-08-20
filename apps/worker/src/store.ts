@@ -18,6 +18,15 @@ const terminalJobStatuses = new Set<JobStatus>([
 ]);
 const jobLocks = new Map<string, Promise<void>>();
 
+export type ApproveJobStepResult =
+  | { outcome: "approved"; job: Job }
+  | { outcome: "approval_not_found"; job: Job }
+  | { outcome: "terminal"; job: Job };
+
+export function isTerminalJobStatus(status: JobStatus): boolean {
+  return terminalJobStatuses.has(status);
+}
+
 export class LocalJobStore {
   readonly artifactsDir: string;
   private readonly jobsDir: string;
@@ -104,6 +113,39 @@ export class LocalJobStore {
     return (await this.transitionStatus(jobId, status))?.job;
   }
 
+  async approveStep(
+    jobId: string,
+    stepId: string
+  ): Promise<ApproveJobStepResult | undefined> {
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      if (isTerminalJobStatus(job.status)) {
+        return { outcome: "terminal", job };
+      }
+      if (!job.approvals.some((approval) => approval.stepId === stepId)) {
+        return { outcome: "approval_not_found", job };
+      }
+
+      const transition = this.buildStatusTransition(job, "queued");
+      if (!transition.changed) {
+        return { outcome: "terminal", job: transition.job };
+      }
+      const next: Job = {
+        ...transition.job,
+        approvals: transition.job.approvals.filter(
+          (approval) => approval.stepId !== stepId
+        ),
+        events: [
+          ...transition.job.events,
+          createJobEvent("approval", "info", `Approved step ${stepId}.`)
+        ].slice(-this.maxJobEvents)
+      };
+      await this.writeJob(next);
+      return { outcome: "approved", job: next };
+    });
+  }
+
   async cancelJob(
     jobId: string
   ): Promise<{ changed: boolean; job: Job } | undefined> {
@@ -117,19 +159,40 @@ export class LocalJobStore {
     return this.withLock(jobId, async () => {
       const job = await this.getJob(jobId);
       if (!job) return undefined;
-      if (terminalJobStatuses.has(job.status)) return { changed: false, job };
-      const now = new Date().toISOString();
-      const next: Job = {
+      const transition = this.buildStatusTransition(job, status);
+      if (transition.changed) await this.writeJob(transition.job);
+      return transition;
+    });
+  }
+
+  async setCallbackSummary(jobId: string, summary: string): Promise<Job | undefined> {
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      if (job.callbackSummary === summary) return job;
+      const next = {
         ...job,
-        events: [
-          ...job.events,
-          createJobEvent("job", "info", `Status changed to ${status}.`)
-        ].slice(-this.maxJobEvents),
-        status,
+        callbackSummary: summary,
+        updatedAt: new Date().toISOString()
+      };
+      await this.writeJob(next);
+      return next;
+    });
+  }
+
+  async markCallbackDelivered(jobId: string): Promise<Job | undefined> {
+    return this.withLock(jobId, async () => {
+      const job = await this.getJob(jobId);
+      if (!job) return undefined;
+      if (job.callbackDeliveredAt) return job;
+      const now = new Date().toISOString();
+      const next = {
+        ...job,
+        callbackDeliveredAt: now,
         updatedAt: now
       };
       await this.writeJob(next);
-      return { changed: true, job: next };
+      return next;
     });
   }
 
@@ -208,6 +271,26 @@ export class LocalJobStore {
 
   private jobPath(jobId: string): string {
     return join(this.jobsDir, `${jobId}.json`);
+  }
+
+  private buildStatusTransition(
+    job: Job,
+    status: JobStatus
+  ): { changed: boolean; job: Job } {
+    if (isTerminalJobStatus(job.status)) return { changed: false, job };
+    const now = new Date().toISOString();
+    return {
+      changed: true,
+      job: {
+        ...job,
+        events: [
+          ...job.events,
+          createJobEvent("job", "info", `Status changed to ${status}.`)
+        ].slice(-this.maxJobEvents),
+        status,
+        updatedAt: now
+      }
+    };
   }
 
   private async writeJob(job: Job): Promise<void> {

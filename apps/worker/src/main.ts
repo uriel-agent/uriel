@@ -24,7 +24,11 @@ import { JobScheduler } from "./job-scheduler.ts";
 import { HostCapacityGovernor, type HostCapacityDecision } from "./host-capacity.ts";
 import { JobReporter } from "./reporter.ts";
 import { ReadinessHistory } from "./readiness-history.ts";
-import { runJob, sendJobCallback } from "./runner.ts";
+import {
+  replayUndeliveredJobCallbacks,
+  runJob,
+  sendJobCallback
+} from "./runner.ts";
 import { runCommand, withCommandAbortSignal } from "./shell.ts";
 import { appendWatchdogAlert, SmokeCoordinator } from "./smoke.ts";
 import { LocalJobStore } from "./store.ts";
@@ -84,7 +88,7 @@ async function serve(config: WorkerConfig): Promise<void> {
   if (startupCleanup.length > 0) {
     console.log(JSON.stringify({ actions: startupCleanup, type: "startup-cleanup" }));
   }
-  const strandedJobs = await store.failRunningJobsAfterRestart();
+  await store.failRunningJobsAfterRestart();
   scheduler.androidSlots = new AndroidSlotPool(config.androidAvds);
   scheduler.iosSimulatorSlots = new IosSimulatorSlotPool(config.iosSimulatorUdids);
   scheduler.capacity = new HostCapacityGovernor(config);
@@ -160,15 +164,9 @@ async function serve(config: WorkerConfig): Promise<void> {
   for (const job of (await store.listJobs()).filter((candidate) => candidate.status === "queued")) {
     enqueueJob(job, config);
   }
-  for (const job of strandedJobs) {
-    const reporter = new JobReporter({ jobId: job.id, store });
-    void sendJobCallback(
-      job,
-      config,
-      reporter,
-      "Worker restarted while the job was running; job marked failed."
-    );
-  }
+  void replayUndeliveredJobCallbacks(config, store).catch((error) => {
+    console.error(`Job callback replay failed: ${errorMessage(error)}`);
+  });
 }
 
 export async function handleRequest(
@@ -260,7 +258,8 @@ export async function handleRequest(
     const cancelMatch = /^\/jobs\/([^/]+)\/cancel$/u.exec(url.pathname);
     if (request.method === "POST" && cancelMatch?.[1]) {
       const jobId = decodeURIComponent(cancelMatch[1]);
-      const result = await new LocalJobStore(config).cancelJob(jobId);
+      const store = new LocalJobStore(config);
+      const result = await store.cancelJob(jobId);
       if (!result) {
         writeJson(response, 404, { error: "Job not found." });
         return;
@@ -273,12 +272,12 @@ export async function handleRequest(
       }
       const cancellation = scheduler.jobs?.cancel(jobId) ?? false;
       if (cancellation === "queued") {
-        await new LocalJobStore(config).appendEvent(
+        await store.appendEvent(
           jobId,
           createJobEvent("worker", "info", "Removed cancelled job from the scheduler queue.")
         );
       } else if (cancellation === "active") {
-        await new LocalJobStore(config).appendEvent(
+        await store.appendEvent(
           jobId,
           createJobEvent(
             "worker",
@@ -289,11 +288,20 @@ export async function handleRequest(
       }
       if (scheduler.cleanup && cancellation !== "active") {
         const actions = await scheduler.cleanup.cleanupJob(jobId, "job cancelled");
-        await new LocalJobStore(config).appendEvent(
+        await store.appendEvent(
           jobId,
           createJobEvent("worker", "info", "Cancellation cleanup completed.", {
             actions: JSON.parse(JSON.stringify(actions)) as JsonValue
           })
+        );
+      }
+      if (cancellation !== "active") {
+        const cancelledJob = (await store.getJob(jobId)) ?? result.job;
+        void sendJobCallback(
+          cancelledJob,
+          config,
+          new JobReporter({ jobId, store }),
+          "Job cancelled."
         );
       }
       writeJson(response, 200, result.job);
@@ -305,20 +313,23 @@ export async function handleRequest(
       const store = new LocalJobStore(config);
       const jobId = decodeURIComponent(approveMatch[1]);
       const stepId = decodeURIComponent(approveMatch[2]);
-      const job = await store.getJob(jobId);
-      if (!job) {
+      const result = await store.approveStep(jobId, stepId);
+      if (!result) {
         writeJson(response, 404, { error: "Job not found." });
         return;
       }
-      const next = {
-        ...job,
-        approvals: job.approvals.filter((approval) => approval.stepId !== stepId),
-        status: "queued" as const,
-        updatedAt: new Date().toISOString()
-      };
-      await store.putJob(next);
-      await store.appendEvent(jobId, createJobEvent("approval", "info", `Approved step ${stepId}.`));
-      writeJson(response, 200, await store.getJob(jobId));
+      if (result.outcome === "terminal") {
+        writeJson(response, 409, {
+          error: `Cannot approve a step on job with status "${result.job.status}".`
+        });
+        return;
+      }
+      if (result.outcome === "approval_not_found") {
+        writeJson(response, 404, { error: `Pending approval ${stepId} not found.` });
+        return;
+      }
+      enqueueJob(result.job, config);
+      writeJson(response, 200, result.job);
       return;
     }
 

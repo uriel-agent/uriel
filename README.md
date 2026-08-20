@@ -240,6 +240,8 @@ Common variables:
 - `URIEL_ANDROID_BOOT_TIMEOUT_SECONDS`
 - `URIEL_ANDROID_APK_URL`
 - `URIEL_ANDROID_APK_SHA256`
+- `URIEL_ANDROID_APK_FINGERPRINT`
+- `URIEL_ANDROID_COMPAT_FILE`
 - `URIEL_ANDROID_APP_PACKAGE`
 - `URIEL_IOS_SIMULATOR_UDID`
 - `URIEL_IOS_SIMULATOR_UDIDS`
@@ -259,6 +261,11 @@ be a `file://` URL when an operator maintains the signed APK on the worker
 host; the checksum is still verified before every install. Provisioning proves
 the serial-to-AVD ownership binding before package changes, cleanly reinstalls
 on version/signature conflicts, and clears application data before each job.
+When `URIEL_ANDROID_APK_FINGERPRINT` and `URIEL_ANDROID_COMPAT_FILE` are both
+set, Android jobs also require the provisioned APK fingerprint to appear as a
+40-character hexadecimal string anywhere in the JSON compatibility file at
+that repository-relative path. A mismatch fails the job before device setup so
+the worker cannot silently test a revision with a stale app binary.
 
 ### Migrating a macOS worker to dedicated AVDs
 
