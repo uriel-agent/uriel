@@ -6,6 +6,9 @@ export interface WorkerConfig {
   androidApkFingerprint?: string;
   androidApkUrl?: string;
   androidApkSha256?: string;
+  androidApkManifestFile?: string;
+  androidApkRefreshCmd?: string;
+  androidApkRefreshTimeoutSeconds: number;
   androidAppPackage?: string;
   androidCompatFile?: string;
   androidBootTimeoutSeconds: number;
@@ -83,6 +86,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     androidApkFingerprint: env.URIEL_ANDROID_APK_FINGERPRINT?.trim().toLowerCase() || undefined,
     androidApkUrl: env.URIEL_ANDROID_APK_URL?.trim() || undefined,
     androidApkSha256: env.URIEL_ANDROID_APK_SHA256?.trim().toLowerCase() || undefined,
+    androidApkManifestFile: env.URIEL_ANDROID_APK_MANIFEST_FILE?.trim() || undefined,
+    androidApkRefreshCmd: env.URIEL_ANDROID_APK_REFRESH_CMD?.trim() || undefined,
+    androidApkRefreshTimeoutSeconds: positiveInteger(
+      env.URIEL_ANDROID_APK_REFRESH_TIMEOUT_SECONDS,
+      300
+    ),
     androidAppPackage: env.URIEL_ANDROID_APP_PACKAGE?.trim() || undefined,
     androidCompatFile: env.URIEL_ANDROID_COMPAT_FILE?.trim() || undefined,
     androidBootTimeoutSeconds: Math.max(

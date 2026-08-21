@@ -242,6 +242,9 @@ Common variables:
 - `URIEL_ANDROID_APK_SHA256`
 - `URIEL_ANDROID_APK_FINGERPRINT`
 - `URIEL_ANDROID_COMPAT_FILE`
+- `URIEL_ANDROID_APK_MANIFEST_FILE`
+- `URIEL_ANDROID_APK_REFRESH_CMD`
+- `URIEL_ANDROID_APK_REFRESH_TIMEOUT_SECONDS` (defaults to `300`)
 - `URIEL_ANDROID_APP_PACKAGE`
 - `URIEL_IOS_SIMULATOR_UDID`
 - `URIEL_IOS_SIMULATOR_UDIDS`
@@ -266,6 +269,15 @@ set, Android jobs also require the provisioned APK fingerprint to appear as a
 40-character hexadecimal string anywhere in the JSON compatibility file at
 that repository-relative path. A mismatch fails the job before device setup so
 the worker cannot silently test a revision with a stale app binary.
+
+Configure `URIEL_ANDROID_APK_REFRESH_CMD` (alongside
+`URIEL_ANDROID_APK_MANIFEST_FILE`) so the worker fixes a stale APK instead of
+just failing on it. On a compatibility mismatch the worker runs the refresh
+command once, re-reads the manifest, and proceeds with the refreshed APK if
+it's now compatible; only a build that's still incompatible after refreshing
+(or a refresh command that fails, or no refresh command configured) reaches
+the terminal failure. See [docs/deployment.md](docs/deployment.md) for the
+manifest contract and an example refresh command.
 
 ### Migrating a macOS worker to dedicated AVDs
 

@@ -4,8 +4,9 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { readAndroidApkManifest, verifyAndroidApkManifestChecksum } from "./android-apk-manifest.ts";
 import { listAttachedAndroidAvds, resolveAndroidTools } from "./android-tooling.ts";
 import {
   androidAvdOwnershipErrors,
@@ -51,6 +52,36 @@ export function configuredAndroidProvisioning(
   };
 }
 
+/**
+ * Layers the `URIEL_ANDROID_APK_MANIFEST_FILE` override (when configured and
+ * valid) on top of the static provisioning config: the manifest's `apkPath`
+ * becomes the install source (as a `file://` URL, same install path the
+ * provisioner already uses for static `file://` APKs) and its `sha256`
+ * (when present) becomes the digest to verify. When the manifest carries no
+ * sha256, this computes the APK's actual digest and uses that — the manifest
+ * contract only asks for verification when it declares a checksum, and
+ * `provisionAndroidApp`'s file:// path always verifies against whatever
+ * digest it's handed. Falls back to the static provisioning config when no
+ * manifest is configured, missing, or unparseable.
+ */
+export async function resolveEffectiveAndroidProvisioning(
+  config: WorkerConfig
+): Promise<AndroidProvisioningConfig | undefined> {
+  const provisioning = configuredAndroidProvisioning(config);
+  if (!provisioning) return undefined;
+  const manifestFile = config.androidApkManifestFile;
+  if (!manifestFile) return provisioning;
+  const manifest = await readAndroidApkManifest(manifestFile);
+  if (!manifest) return provisioning;
+  await verifyAndroidApkManifestChecksum(manifest);
+  const sha256 = manifest.sha256 ?? (await sha256File(manifest.apkPath));
+  return {
+    packageName: provisioning.packageName,
+    sha256,
+    url: pathToFileURL(manifest.apkPath).toString()
+  };
+}
+
 export async function provisionAndroidApp(
   config: WorkerConfig,
   serial: string,
@@ -58,7 +89,7 @@ export async function provisionAndroidApp(
   evidence?: EvidenceRecorder,
   requestedAvd: string | undefined = config.androidAvd
 ): Promise<void> {
-  const provisioning = configuredAndroidProvisioning(config);
+  const provisioning = await resolveEffectiveAndroidProvisioning(config);
   if (!provisioning) return;
   const adb = (await resolveAndroidTools(config)).adb;
   if (!adb) {
