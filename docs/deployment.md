@@ -83,7 +83,75 @@ Useful NixOS module knobs:
   environment file: optionally fail Android jobs when the provisioned APK's
   40-character fingerprint is absent from the repository-relative JSON
   compatibility file at the checked-out revision.
+- `URIEL_ANDROID_APK_MANIFEST_FILE` plus `URIEL_ANDROID_APK_REFRESH_CMD`:
+  optionally let the worker refresh a stale APK itself instead of just
+  failing the job. See "Automatic APK refresh" below.
 - `extraPackages`: adds repo-specific tools to the worker service `PATH`.
+
+### Automatic APK refresh
+
+By default, an APK fingerprint that's absent from `URIEL_ANDROID_COMPAT_FILE`
+fails the job outright — the only way to recover is an operator manually
+re-provisioning the APK. Configuring `URIEL_ANDROID_APK_REFRESH_CMD` alongside
+`URIEL_ANDROID_APK_MANIFEST_FILE` lets the worker fix itself instead:
+
+1. On a compatibility mismatch, the worker runs the refresh command once
+   (holding a lock file next to the manifest, so two concurrent jobs never run
+   it at the same time) and re-reads the manifest.
+2. If the refreshed manifest's fingerprint is now in the compat file, the job
+   proceeds with the refreshed APK.
+3. Only if the build is still incompatible after refreshing — or the refresh
+   command exits non-zero, or no refresh command is configured — does the job
+   fail. That failure message says whether a refresh was attempted and what
+   it produced, so it's the last resort, not the first response.
+
+**`URIEL_ANDROID_APK_REFRESH_CMD`** is an operator-supplied shell command run
+via `sh -lc` with a `cwd` of `<URIEL_STATE_DIR>/android-apk-refresh` (created
+on demand) and a timeout of `URIEL_ANDROID_APK_REFRESH_TIMEOUT_SECONDS`
+(defaults to `300`). Its job is to fetch the current build and write
+**`URIEL_ANDROID_APK_MANIFEST_FILE`** — a JSON manifest:
+
+```json
+{
+  "fingerprint": "<40 lowercase hex characters>",
+  "apkPath": "<absolute path to the downloaded APK>",
+  "sha256": "<64 lowercase hex characters, optional>"
+}
+```
+
+Extra keys are tolerated. `sha256` is optional but verified against the APK
+on disk whenever present — a checksum mismatch fails the job loud rather than
+installing a corrupt download. When the manifest is present and valid, its
+`fingerprint`/`apkPath` override the static `URIEL_ANDROID_APK_FINGERPRINT`/
+`URIEL_ANDROID_APK_URL` for both the compatibility gate and the actual
+install (the manifest's `apkPath` is installed the same way a static
+`file://` `URIEL_ANDROID_APK_URL` would be); an unset, missing, or
+unparseable manifest falls back to the static configuration exactly as if no
+manifest were configured at all. The static `URIEL_ANDROID_APK_URL` /
+`URIEL_ANDROID_APK_SHA256` / `URIEL_ANDROID_APP_PACKAGE` provisioning trio is
+still required — the manifest is an override on top of an already-configured
+provisioner, not a replacement for it.
+
+Example refresh command sketch (adapt the fetch step to your build's actual
+distribution channel — a generic release API is shown here):
+
+```bash
+URIEL_ANDROID_APK_REFRESH_CMD='
+  set -euo pipefail
+  curl -fsSL -H "Authorization: Bearer $BUILD_API_TOKEN" \
+    "$BUILD_API_URL/latest?platform=android" -o ./latest-metadata.json
+  fingerprint=$(jq -r .fingerprint ./latest-metadata.json)
+  download_url=$(jq -r .apkDownloadUrl ./latest-metadata.json)
+  curl -fsSL "$download_url" -o ./current.apk
+  sha256=$(sha256sum ./current.apk | cut -d" " -f1)
+  jq -n --arg fp "$fingerprint" --arg path "$(pwd)/current.apk" --arg sha "$sha256" \
+    "{fingerprint: \$fp, apkPath: \$path, sha256: \$sha}" > "$URIEL_ANDROID_APK_MANIFEST_FILE"
+'
+```
+
+(`gh release download` against a private release repo, or any other
+org-specific fetch, works the same way — the worker only cares that the
+command exits `0` and leaves a valid manifest behind.)
 
 Deploy the host:
 
