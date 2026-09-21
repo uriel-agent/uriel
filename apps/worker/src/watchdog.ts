@@ -137,3 +137,13 @@ export class ReadinessWatchdog {
 function reportError(error: unknown): void {
   console.error(`Readiness watchdog failed: ${error instanceof Error ? error.message : String(error)}`);
 }
+
+// The ADB daemon is host-wide, even when Uriel owns dedicated AVDs. Never
+// restart it automatically: doing so drops other sessions' reverse mappings.
+export async function recoverSharedAdb(
+  probe: WatchdogProbe,
+  startServer: () => Promise<void>
+): Promise<void> {
+  if (!probe.causes.some((cause) => cause.startsWith("android.adb.responsive:"))) return;
+  await startServer();
+}

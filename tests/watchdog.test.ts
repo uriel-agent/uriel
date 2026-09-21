@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ReadinessWatchdog, type WatchdogProbe } from "../apps/worker/src/watchdog.ts";
+import { recoverSharedAdb, ReadinessWatchdog, type WatchdogProbe } from "../apps/worker/src/watchdog.ts";
 
 describe("ReadinessWatchdog", () => {
   it("recovers only after a sustained actionable failure and alerts if it persists", async () => {
@@ -157,5 +157,32 @@ describe("ReadinessWatchdog", () => {
       consecutiveDegraded: 1,
       lastStatus: "not-ready"
     });
+  });
+});
+
+describe("shared ADB recovery", () => {
+  it.each([
+    "android.apk.configuration: Configured APK does not exist",
+    "host.capacity: memory pressure",
+    "android.avds: missing AVD",
+    "watchdog.probe.timeout: deadline exceeded"
+  ])("does not touch ADB for %s, while still alerting", async (cause) => {
+    const start = vi.fn(async () => undefined);
+    const alert = vi.fn(async () => undefined);
+    const probe: WatchdogProbe = { actionable: true, causes: [cause], status: "not-ready" };
+    const watchdog = new ReadinessWatchdog({
+      alert, cooldownMs: 1, intervalMs: 1, threshold: 1,
+      probe: async () => probe,
+      recover: async (failure) => recoverSharedAdb(failure, start)
+    });
+    await watchdog.tick(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(probe);
+  });
+
+  it("can start an unavailable daemon on a real ADB responsiveness failure", async () => {
+    const start = vi.fn(async () => undefined);
+    await recoverSharedAdb({ actionable: true, causes: ["android.adb.responsive: connection refused"], status: "not-ready" }, start);
+    expect(start).toHaveBeenCalledOnce();
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -228,7 +229,7 @@ describe("worker readiness", () => {
     expect(response.status).toBe(503);
     expect(body.checks).toContainEqual(expect.objectContaining({
       id: "android.adb.responsive",
-      remediation: expect.stringContaining("adb kill-server"),
+      remediation: expect.stringContaining("Coordinate with other device sessions"),
       status: "fail"
     }));
   });
@@ -263,6 +264,27 @@ describe("worker readiness", () => {
     expect(body.checks).toContainEqual(expect.objectContaining({
       id: "android.emulator.boot-capability",
       status: "fail"
+    }));
+  });
+
+  it.each([true, false])("uses the effective APK manifest and verifies its checksum (valid=%s)", async (valid) => {
+    const config = await readyConfig();
+    const root = await temporaryDirectory();
+    const apkPath = join(root, "current.apk");
+    await writeFile(apkPath, "test apk");
+    config.androidApkUrl = "file:///missing/old.apk";
+    config.androidApkSha256 = "a".repeat(64);
+    config.androidAppPackage = "com.example.qa";
+    config.androidApkManifestFile = join(root, "manifest.json");
+    await writeFile(config.androidApkManifestFile, JSON.stringify({
+      apkPath, fingerprint: "c".repeat(40),
+      sha256: valid ? createHash("sha256").update("test apk").digest("hex") : "b".repeat(64)
+    }));
+    const response = await authorizedReady(await startWorker(config));
+    const body = await response.json() as { checks: Array<{ id: string; status: string }> };
+    expect(response.status).toBe(valid ? 200 : 503);
+    expect(body.checks).toContainEqual(expect.objectContaining({
+      id: "android.apk.configuration", status: valid ? "pass" : "fail"
     }));
   });
 

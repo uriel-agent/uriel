@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-import { configuredAndroidProvisioning } from "./android-provisioning.ts";
+import { resolveEffectiveAndroidProvisioning } from "./android-provisioning.ts";
 import { androidAvdOwnershipErrors } from "./android-ownership.ts";
 import {
   checkAndroidEmulatorAcceleration,
@@ -103,7 +103,7 @@ export async function checkWorkerReadiness(
     checks.push({
       detail: attached.error,
       id: "android.adb.responsive",
-      remediation: "Run `adb kill-server && adb start-server`, then recheck host USB/emulator access.",
+      remediation: "Check host USB/emulator access and try `adb start-server`. Coordinate with other device sessions before manually restarting the shared ADB server.",
       status: "fail"
     });
     await checkProvisioning(config, checks);
@@ -217,7 +217,7 @@ async function checkProvisioning(
   checks: ReadinessCheck[]
 ): Promise<void> {
   try {
-    const provisioning = configuredAndroidProvisioning(config);
+    const provisioning = await resolveEffectiveAndroidProvisioning(config);
     if (!provisioning) {
       checks.push({
         detail: "Pinned APK provisioning is not configured; jobs may provision the app through their harness.",
