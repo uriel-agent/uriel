@@ -33,7 +33,7 @@ import { runCommand, withCommandAbortSignal } from "./shell.ts";
 import { appendWatchdogAlert, SmokeCoordinator } from "./smoke.ts";
 import { LocalJobStore } from "./store.ts";
 import { checkWorkerReadiness } from "./worker-readiness.ts";
-import { ReadinessWatchdog } from "./watchdog.ts";
+import { recoverSharedAdb, ReadinessWatchdog } from "./watchdog.ts";
 
 const scheduler: {
   androidSlots?: AndroidSlotPool;
@@ -501,7 +501,7 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
     record: async (probe, at) => {
       await scheduler.readinessHistory?.record(probe, at);
     },
-    recover: async () => {
+    recover: async (probe) => {
       const state = scheduler.jobs?.state();
       if (maintenance.owner || !state || state.activeJobs > 0 || state.queuedJobs > 0) return;
       maintenance.owner = "watchdog";
@@ -509,11 +509,10 @@ function createWatchdog(config: WorkerConfig): ReadinessWatchdog {
         const confirmed = scheduler.jobs?.state();
         if (!confirmed || confirmed.activeJobs > 0 || confirmed.queuedJobs > 0) return;
         await scheduler.cleanup?.reconcileStartup();
-        const adb = (await resolveAndroidTools(config)).adb;
-        if (adb) {
-          await runCommand(adb.command, ["kill-server"], { timeoutMs: 30_000 });
-          await runCommand(adb.command, ["start-server"], { timeoutMs: 30_000 });
-        }
+        await recoverSharedAdb(probe, async () => {
+          const adb = (await resolveAndroidTools(config)).adb;
+          if (adb) await runCommand(adb.command, ["start-server"], { timeoutMs: 30_000 });
+        });
       } finally {
         maintenance.owner = undefined;
         scheduler.jobs?.wake();
